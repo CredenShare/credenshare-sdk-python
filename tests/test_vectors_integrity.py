@@ -78,7 +78,26 @@ def test_the_vendored_fixture_matches_the_published_one() -> None:
     """
     import httpx
 
-    published = httpx.get(os.environ["CREDENSHARE_VECTORS_URL"], timeout=30).content
+    url = os.environ["CREDENSHARE_VECTORS_URL"]
+    response = httpx.get(url, timeout=30)
+
+    # Check the status BEFORE comparing bytes. A 404 or a proxy error page also "differs
+    # from the vendored fixture", and the assertion below would report that as drift and
+    # tell a maintainer to overwrite a known-good fixture with an HTML error page.
+    assert response.status_code == 200, (
+        f"the published fixture is not reachable: {url} returned HTTP "
+        f"{response.status_code}. Drift is NOT being checked. Fix the URL - do not touch "
+        f"vectors.v1.json."
+    )
+    try:
+        json.loads(response.content)
+    except ValueError as exc:  # pragma: no cover - depends on what the URL serves
+        raise AssertionError(
+            f"the published fixture at {url} is not JSON ({exc}). Drift is NOT being "
+            f"checked. Fix the URL - do not touch vectors.v1.json."
+        ) from exc
+
+    published = response.content
     assert published == VECTORS_PATH.read_bytes(), (
         "the vendored fixture differs from the published one. The spec has moved; update "
         "src/credenshare/conformance/vectors.v1.json and re-pin its digest."

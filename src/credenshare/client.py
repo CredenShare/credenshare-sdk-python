@@ -11,6 +11,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional, Sequence
+from urllib.parse import quote
 
 import httpx
 
@@ -19,7 +20,9 @@ from .errors import (
     ApiError,
     AuthenticationError,
     CredentialFormatError,
+    CustodySecretMissingError,
     CustodySecretTransmittedError,
+    DeliveryUnknownError,
     IdempotencyConflictError,
     NotFoundError,
     PermissionError_,
@@ -194,6 +197,9 @@ class _Shares:
         timed_view: Optional[int] = None,
         idempotency_key: Optional[str] = None,
         content_key: Optional[bytes] = None,
+        custody: bool = False,
+        item_key_wrap: Optional[str] = None,
+        organization_id: Optional[str] = None,
     ) -> Share:
         """Encrypt ``fields`` locally and create a share.
 
@@ -213,6 +219,13 @@ class _Shares:
         this client performs those itself. Pass a key to control the value for your own
         tracing, not to deduplicate calls.
 
+        ``custody=True`` additionally wraps the content key to the custody public key derived
+        from your credential's third part, so the share is readable from the dashboard later.
+        Without it — the default — an API-created share is custody ``"none"``: the link is the
+        only way back to the content, and losing it loses the secret. The custody secret is
+        used locally to derive a public key and is never transmitted. Pass ``item_key_wrap``
+        instead to supply a wrap you computed yourself.
+
         ``content_key`` lets you create a share under a key you already hold — a link you
         handed out before the create, or a fixed key in a test. It does not make the request
         body reproducible. Never reuse a key across shares whose content differs: this client
@@ -220,6 +233,21 @@ class _Shares:
         you from carrying a key somewhere that does not.
         """
         content_key = content_key if content_key is not None else crypto.new_content_key()
+
+        if custody and item_key_wrap is not None:
+            raise ValueError("pass either custody=True or item_key_wrap, not both")
+        if custody:
+            secret = self._client.credential.custody_secret
+            if not secret:
+                raise CustodySecretMissingError(
+                    "custody=True needs a three-part credential "
+                    "'crs_sk_live_<keyId>.<authSecret>.<custodySecret>'; this one has two "
+                    "parts, so there is no custody key to wrap to"
+                )
+            item_key_wrap = crypto.wrap_to_public_key(
+                content_key, crypto.custody_keypair(secret).public_key_raw
+            )
+
         blob = crypto.encrypt_content(content_key, fields, passcode)
 
         body: Dict[str, Any] = {
@@ -238,6 +266,10 @@ class _Shares:
             body["access_counts_left"] = access_counts_left
         if timed_view is not None:
             body["timed_view"] = timed_view
+        if item_key_wrap is not None:
+            body["item_key_wrap"] = item_key_wrap
+        if organization_id is not None:
+            body["organization_id"] = organization_id
 
         # Required by the API, not optional. A retried automation must not create a second
         # copy of a credential in the world, with its own link and audit trail, that the
@@ -295,7 +327,7 @@ class _Shares:
         Does not consume a view, evaluate a passcode, or return content. A share belonging to
         another account reports exactly as one that does not exist.
         """
-        data = self._client._request("GET", f"/shares/{short_code}")
+        data = self._client._request("GET", f"/shares/{quote(short_code, safe='')}")
         return ShareSummary(
             short_code=data.get("short_code", short_code),
             expired_at=data.get("expired_at"),
@@ -317,7 +349,7 @@ class _Shares:
         elsewhere — and an organization-scoped key cannot expire a colleague's share even
         though :meth:`list` shows it.
         """
-        self._client._request("DELETE", f"/shares/{short_code}")
+        self._client._request("DELETE", f"/shares/{quote(short_code, safe='')}")
 
 
 class CredenShare:
@@ -415,6 +447,7 @@ class CredenShare:
         # POST is safe to repeat here because the body and the Idempotency-Key are both
         # byte-identical on the second attempt — which is what the header is for.
         attempt = 0
+        delivered = False
         while True:
             try:
                 response = self._client.request(
@@ -422,7 +455,18 @@ class CredenShare:
                 )
                 break
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout) as exc:
+                # A read timeout is not a connect failure. The request was written to an
+                # established connection, so the server may have committed it; saying
+                # "nothing was created" here is what makes a caller retry with a new key
+                # and end up with two copies of one secret.
+                delivered = delivered or isinstance(exc, httpx.ReadTimeout)
                 if attempt >= self._max_retries:
+                    if delivered:
+                        raise DeliveryUnknownError(
+                            f"the request was delivered but no response was read after "
+                            f"{attempt + 1} attempt(s): {exc}",
+                            attempts=attempt + 1,
+                        ) from exc
                     raise ServiceUnavailableError(
                         f"could not reach the API after {attempt + 1} attempt(s): {exc}"
                     ) from exc
@@ -447,8 +491,14 @@ def _error_for(response: httpx.Response) -> ApiError:
     message = f"HTTP {response.status_code}"
     code: Optional[int] = None
     try:
-        payload = response.json()
-        message = payload.get("message") or message
+        parsed = response.json()
+        # A JSON body that is not an object (a bare string, a list) is still a failed
+        # response. Reading .get off it would raise AttributeError from inside the error
+        # path, replacing the API's error with a bug in this client.
+        payload = parsed if isinstance(parsed, dict) else {}
+        message = payload.get("message") or (
+            parsed[:200] if isinstance(parsed, str) and parsed else message
+        )
         code = payload.get("error_code")
     except ValueError:
         if response.text:

@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import time
 from typing import Iterable, Optional
 
-__all__ = ["verify", "WebhookVerificationError", "DEFAULT_TOLERANCE_SECONDS"]
+__all__ = ["verify", "WebhookVerificationError", "DEFAULT_TOLERANCE_SECONDS", "SIGNATURE_HEADER"]
 
 #: How far a delivery's timestamp may sit from your clock, in either direction.
 #:
@@ -22,7 +23,9 @@ __all__ = ["verify", "WebhookVerificationError", "DEFAULT_TOLERANCE_SECONDS"]
 #: long.
 DEFAULT_TOLERANCE_SECONDS = 300
 
-_SIGNATURE_HEADER = "X-CredenShare-Signature"
+SIGNATURE_HEADER = "X-CredenShare-Signature"
+#: Retained so existing imports of the private name keep working.
+_SIGNATURE_HEADER = SIGNATURE_HEADER
 
 
 class WebhookVerificationError(Exception):
@@ -101,12 +104,14 @@ def _parse(header: str) -> "tuple[int, list[str]]":
     for part in header.split(","):
         key, _, value = part.strip().partition("=")
         if key == "t":
-            try:
-                timestamp = int(value)
-            except ValueError as exc:
-                raise WebhookVerificationError(
-                    f"the timestamp {value!r} is not a unix time"
-                ) from exc
+            # int() is far laxer than the wire format: it accepts surrounding whitespace, a
+            # leading +, underscore separators and non-ASCII digits. The other three clients
+            # reject all four, so accepting them here means a header this SDK verifies and
+            # the Go/Node/Rust SDKs reject - a difference that only ever shows up in
+            # production, on one language.
+            if not re.fullmatch(r"-?[0-9]+", value):
+                raise WebhookVerificationError(f"the timestamp {value!r} is not a unix time")
+            timestamp = int(value)
         elif key == "v1":
             # Several v1 entries is normal, not an error: it is how a rotation grace window
             # is expressed, so a receiver holding either secret keeps verifying.

@@ -23,8 +23,10 @@ __all__ = [
     "QuotaExceededError",
     "IdempotencyConflictError",
     "ServiceUnavailableError",
+    "DeliveryUnknownError",
     "CredentialFormatError",
     "CustodySecretTransmittedError",
+    "CustodySecretMissingError",
 ]
 
 
@@ -153,6 +155,33 @@ class ServiceUnavailableError(ApiError):
     "unlimited" would let an account exceed its plan and guessing "exhausted" would break a
     healthy one during a billing hiccup.
     """
+
+
+class CustodySecretMissingError(CredenShareError):
+    """Custody was requested but the credential carries no custody secret.
+
+    Custody wrapping needs the third part of ``crs_sk_live_<keyId>.<authSecret>.<custodySecret>``.
+    A two-part credential can create shares, but only ones whose link is the sole way back to
+    the content.
+    """
+
+
+class DeliveryUnknownError(CredenShareError):
+    """The request reached the API but its outcome could not be read.
+
+    Distinct from :class:`ServiceUnavailableError`, which means nothing was created. Here the
+    bytes were delivered and the server may well have committed — a create that raises this
+    may have produced a share whose link this process never saw.
+
+    Do not retry with a fresh ``idempotency_key``: that is how one secret becomes two, each
+    with its own link and audit trail. Repeat the identical request (same key) so the API can
+    recognise it, or reconcile by listing before retrying.
+    """
+
+    def __init__(self, message: str, *, attempts: int = 1) -> None:
+        super().__init__(message)
+        #: How many times delivery was attempted before giving up.
+        self.attempts = attempts
 
 
 class IdempotencyConflictError(ApiError):

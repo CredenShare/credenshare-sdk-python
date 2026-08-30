@@ -21,7 +21,12 @@ jobs:
           python-version: "3.12"
 
       - run: pip install -e ".[dev]"
+      # Same opt-in variable the CI workflow uses. Without it here, a release - the one
+      # build that cannot be taken back - is the only one that never checks the fixture
+      # against the canonical copy, even on a repository where the check is configured.
       - run: pytest -q
+        env:
+          CREDENSHARE_VECTORS_URL: ${{ vars.CREDENSHARE_VECTORS_URL }}
       - run: python -m credenshare.conformance -v
 
       - name: The tag must match the version in pyproject.toml

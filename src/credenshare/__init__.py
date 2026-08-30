@@ -16,6 +16,14 @@ The implementation follows the published wire specification, and its correctness
 by `conformance/vectors.v1.json` rather than by this code.
 """
 
+from . import webhooks
+from .client import (
+    CredenShare,
+    Credential,
+    Share,
+    ShareList,
+    ShareSummary,
+)
 from .crypto import (
     FIELD_TYPES,
     SeedKeypair,
@@ -36,7 +44,10 @@ from .errors import (
     AuthenticationError,
     CredenShareError,
     CredentialFormatError,
+    CustodySecretMissingError,
     CustodySecretTransmittedError,
+    DeliveryUnknownError,
+    IdempotencyConflictError,
     MalformedKeyError,
     MissingKeyError,
     NotFoundError,
@@ -51,6 +62,12 @@ __version__ = "0.1.0"
 
 __all__ = [
     "__version__",
+    "CredenShare",
+    "Credential",
+    "Share",
+    "ShareList",
+    "ShareSummary",
+    "webhooks",
     "FIELD_TYPES",
     "SeedKeypair",
     "access_token",
@@ -68,7 +85,10 @@ __all__ = [
     "AuthenticationError",
     "CredenShareError",
     "CredentialFormatError",
+    "CustodySecretMissingError",
     "CustodySecretTransmittedError",
+    "DeliveryUnknownError",
+    "IdempotencyConflictError",
     "MalformedKeyError",
     "MissingKeyError",
     "NotFoundError",

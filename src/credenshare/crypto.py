@@ -5,7 +5,7 @@ not this file, and not any other implementation. Where they disagree, the specif
 right and this is a bug.
 
     https://github.com/CredenShare/credenshare-sdk-python  (this SDK)
-    CRYPTO_WIRE_SPEC.md sections 1-4                       (the contract)
+    CRYPTO_WIRE_SPEC.md sections 1-4                       (the contract, in this repo)
 
 Nothing here talks to the network, and nothing here writes to disk. Encryption happens on
 your machine, and the content key never leaves it: that is the entire point of the product,
@@ -97,6 +97,9 @@ def _b64url(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
+_URLSAFE_TO_STANDARD = str.maketrans("-_", "+/")
+
+
 def _unb64url(text: str) -> bytes:
     """Decode unpadded base64url, rejecting anything that is not valid.
 
@@ -104,8 +107,13 @@ def _unb64url(text: str) -> bytes:
     alphabet, so a mangled fragment would decode to *something* and fail later as a
     decryption error rather than as the malformed link it is.
     """
-    padding = "=" * (-len(text) % 4)
-    return base64.urlsafe_b64decode(text + padding)
+    # urlsafe_b64decode() takes no validate= parameter - it translates -_ to +/ and calls
+    # b64decode() with validation off. Do the translation here so validate=True can be
+    # passed to the call that accepts it; without it Python discards characters outside the
+    # alphabet and a mangled fragment decodes to a plausible 32-byte key.
+    standard = text.translate(_URLSAFE_TO_STANDARD)
+    padding = "=" * (-len(standard) % 4)
+    return base64.b64decode(standard + padding, validate=True)
 
 
 # ── section 2.1: the content key and the fragment ────────────────────────────────────

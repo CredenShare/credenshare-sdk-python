@@ -33,7 +33,7 @@ dependencies = [
 [project.urls]
 Homepage = "https://credenshare.io"
 Source = "https://github.com/CredenShare/credenshare-sdk-python"
-Specification = "https://github.com/CredenShare/credenshare-sdk-python/blob/main/README.md#the-wire-specification"
+Specification = "https://github.com/CredenShare/credenshare-sdk-python/blob/main/CRYPTO_WIRE_SPEC.md"
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-cov", "mypy", "ruff", "respx"]

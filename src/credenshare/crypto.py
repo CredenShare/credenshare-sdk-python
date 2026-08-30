@@ -198,7 +198,16 @@ def encrypt_content(
     iv = _iv if _iv is not None else os.urandom(_IV_LEN)
 
     key = _content_key_for(content_key, salt, passcode)
-    plaintext = json.dumps(list(fields), separators=(",", ":")).encode("utf-8")
+    # ensure_ascii=False is REQUIRED, not cosmetic.
+    #
+    # Python escapes every non-ASCII character to a backslash-u sequence by default, and no
+    # other implementation does. The blob still decrypts here and everywhere else — the
+    # escapes decode back to the same string — so nothing errors and nothing looks wrong.
+    # What breaks is byte-for-byte reproducibility: identical fields, key, salt and IV would
+    # produce different ciphertext in Python than in the browser, or in the Node, Go and Rust
+    # clients. The conformance vectors were pure ASCII until a case carrying unicode was
+    # added, and this divergence had been sitting here unnoticed the whole time.
+    plaintext = json.dumps(list(fields), separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     body = AESGCM(key).encrypt(iv, plaintext, None)
     return _b64(salt + iv + body)
 

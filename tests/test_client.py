@@ -395,12 +395,8 @@ def test_a_dropped_connection_is_retried_with_the_same_idempotency_key() -> None
             raise httpx.ConnectError("connection reset", request=request)
         return httpx.Response(201, json={"short_code": "xy12"})
 
-    with CredenShare(
-        CREDENTIAL, transport=httpx.MockTransport(handler), max_retries=2
-    ) as crs:
-        share = crs.shares.create(
-            title="t", fields=[{"key": "k", "value": "v", "type": "text"}]
-        )
+    with CredenShare(CREDENTIAL, transport=httpx.MockTransport(handler), max_retries=2) as crs:
+        share = crs.shares.create(title="t", fields=[{"key": "k", "value": "v", "type": "text"}])
 
     assert share.short_code == "xy12"
     assert len(seen) == 2
@@ -427,9 +423,10 @@ def test_retries_are_bounded_and_surface_as_unavailable() -> None:
         attempts.append(1)
         raise httpx.ConnectError("down", request=request)
 
-    with CredenShare(
-        CREDENTIAL, transport=httpx.MockTransport(handler), max_retries=1
-    ) as crs, pytest.raises(ServiceUnavailableError):
+    with (
+        CredenShare(CREDENTIAL, transport=httpx.MockTransport(handler), max_retries=1) as crs,
+        pytest.raises(ServiceUnavailableError),
+    ):
         crs.shares.list()
 
     assert len(attempts) == 2

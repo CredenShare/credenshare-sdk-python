@@ -282,3 +282,33 @@ def test_the_packaged_self_check_passes(case) -> None:
     """
     _, check = case
     check()
+
+
+def test_non_ascii_is_not_escaped_on_the_wire() -> None:
+    """The Python-specific trap.
+
+    `json.dumps` escapes every non-ASCII character to a backslash-u sequence by default, and
+    no other implementation does. The blob still decrypts — here and everywhere else, because
+    the escapes decode back to the same string — so nothing errors and a round-trip test
+    passes. What breaks is byte-for-byte reproducibility with every other client.
+
+    This sat undetected until a conformance vector carrying unicode was added: the fixture was
+    pure ASCII, so all of it passed either way. The check is on the WIRE PLAINTEXT, because
+    decrypting gives back Python objects that say nothing about the bytes.
+    """
+    key = crypto.new_content_key()
+    fields = [{"key": "ünïcödé", "value": "πασσ — em dash 🔐", "type": "text"}]
+
+    blob = crypto.encrypt_content(key, fields)
+    raw = base64.b64decode(blob)
+    salt, iv, body = raw[:16], raw[16:28], raw[28:]
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    derived = crypto._content_key_for(key, salt, None)
+    plaintext = AESGCM(derived).decrypt(iv, body, None).decode("utf-8")
+
+    escaped = chr(92) + "u"  # backslash-u, not an escape sequence in this source
+    assert escaped not in plaintext, f"the wire plaintext is escaped: {plaintext}"
+    assert "ünïcödé" in plaintext and "🔐" in plaintext
+    assert crypto.decrypt_content(key, blob) == fields

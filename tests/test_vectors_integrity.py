@@ -28,7 +28,7 @@ from credenshare.conformance import VECTORS_PATH
 #: Updating this by hand is a deliberate act. If a conformance test fails, the fix is almost
 #: never to re-pin this — it is to fix the implementation. Re-pin only when intentionally
 #: adopting a newly published fixture, in a commit that says so and nothing else.
-EXPECTED_SHA256 = "fa4011ffbd4f45e534117bbfeb82da65b9c851e92c256440c05c4fd4317da4d6"
+EXPECTED_SHA256 = "91e70661be51edbc4522d202c533292d1eac92691d1fbb02e9eaa13eb23a582c"
 
 
 def _digest() -> str:

@@ -45,7 +45,7 @@ packages = ["src/credenshare"]
 # exact artifact that was installed rather than a copy that happened to sit beside it.
 # the exact artifact they installed, rather than taking the badge's word for it.
 [tool.hatch.build.targets.sdist]
-include = ["src/", "tests/", "README.md", "LICENSE"]
+include = ["src/", "tests/", "README.md", "CRYPTO_WIRE_SPEC.md", "LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

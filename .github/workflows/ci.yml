@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly, because the failure the drift job catches is not caused by a commit here. The
+  # wire specification can move in the application's repository and leave this SDK silently
+  # behind, and nobody would push anything for CI to notice.
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: py${{ matrix.python }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        include:
+          # One Windows and one macOS run, at the oldest and newest supported versions. The
+          # crypto is portable; path handling and console encodings are not, and the
+          # self-check prints text drawn from the vectors — one of which is deliberately
+          # non-ASCII, which is a crash on a legacy Windows code page if mishandled.
+          - os: windows-latest
+            python: "3.9"
+          - os: windows-latest
+            python: "3.13"
+          - os: macos-latest
+            python: "3.13"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Test
+        run: pytest -q
+
+      - name: Self-check the installed package
+        # Exactly what a user runs after `pip install credenshare`. Running it here means a
+        # broken checker cannot ship: a self-check that always passes is worse than none,
+        # because it turns an unverified installation into one somebody believes is verified.
+        run: python -m credenshare.conformance -v
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests scripts
+      - run: ruff format --check src tests scripts
+      - run: mypy src
+
+  conformance-drift:
+    name: the fixture still matches the published spec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Compare the packaged fixture against the published one
+        # THE check this job exists for.
+        #
+        # The application and the four SDKs share no code, deliberately: a package the
+        # production application depended on would mean a compromised publish is a
+        # compromised application. The cost of that decision is drift, and drift here does
+        # not fail a test in normal use — it produces content that can never be decrypted,
+        # discovered by a customer when a link does not open.
+        #
+        # The comparison is byte-for-byte, not semantic. A whitespace-only difference still
+        # means the two files came from different generator runs, and that is worth knowing
+        # before it becomes a difference that matters.
+        #
+        # The URL is configuration rather than a constant because the specification lives in
+        # a private repository, so this needs a URL the runner can actually reach: a release
+        # asset, a raw URL with a token in the header, or a published copy on the docs site.
+        env:
+          CREDENSHARE_VECTORS_URL: ${{ vars.CREDENSHARE_VECTORS_URL }}
+        run: |
+          if [ -z "${CREDENSHARE_VECTORS_URL}" ]; then
+            # Loud, not silent. A skipped drift check reads as a passing one on the summary
+            # page, and this is the single job whose silence is expensive.
+            echo "::warning title=Drift detection is NOT running::Set the repository variable CREDENSHARE_VECTORS_URL to a reachable copy of the published vectors.v1.json. Until then nothing verifies that this SDK's fixture matches the specification, and divergence will surface as content that cannot be decrypted."
+          fi
+          pytest -q tests/test_vectors_integrity.py -rs
+
+  build:
+    name: the built artifact installs and conforms
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          twine check dist/*
+
+      - name: Install the wheel into a clean environment and self-check it
+        # Against the built wheel, from a directory that is not the working tree. The vectors
+        # live inside the package, and this is what proves they actually made it in — a
+        # packaging mistake that dropped them would leave every consumer's
+        # `python -m credenshare.conformance` failing on an install that is otherwise fine,
+        # while CI ran happily against the copy in the source tree.
+        run: |
+          python -m venv /tmp/verify
+          /tmp/verify/bin/pip install dist/*.whl
+          cd /tmp && /tmp/verify/bin/python -m credenshare.conformance -v
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/

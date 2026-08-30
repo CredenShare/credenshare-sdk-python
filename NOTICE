@@ -1,0 +1,8 @@
+CredenShare SDK for Python
+Copyright 2026 CredenShare Inc.
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+This SDK is open source because it has to be. It performs the encryption, so the claim that
+CredenShare cannot read your data is only checkable if the code doing the encrypting can be
+read. A closed client would make that claim unverifiable.

@@ -1,0 +1,172 @@
+"""Errors raised by the CredenShare SDK.
+
+The hierarchy is shallow on purpose. What matters is that a caller can distinguish the cases
+that have *different remedies* — an incomplete link, an expired share, a wrong passcode, a
+plan limit — because on screen several of these look identical and sending somebody to the
+wrong fix is worse than a generic failure.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Optional
+
+__all__ = [
+    "CredenShareError",
+    "MissingKeyError",
+    "MalformedKeyError",
+    "WireFormatError",
+    "ApiError",
+    "AuthenticationError",
+    "PermissionError_",
+    "NotFoundError",
+    "RateLimitError",
+    "QuotaExceededError",
+    "IdempotencyConflictError",
+    "ServiceUnavailableError",
+    "CredentialFormatError",
+    "CustodySecretTransmittedError",
+]
+
+
+class CredenShareError(Exception):
+    """Base class for everything this SDK raises."""
+
+
+# ── link and payload problems ────────────────────────────────────────────────────────
+
+
+class MissingKeyError(CredenShareError):
+    """No key fragment at all.
+
+    Kept distinct from :class:`MalformedKeyError` because the remedies differ: this one means
+    "you were sent a link without its key", which usually means a chat client or an email
+    scanner stripped it.
+    """
+
+
+class MalformedKeyError(CredenShareError):
+    """A fragment is present but unusable — wrong version, bad encoding, wrong length.
+
+    Most often a truncated link. Distinguishing it from an expired share matters, because the
+    two are indistinguishable on screen and have opposite fixes: ask for the link again
+    versus ask for a new share.
+    """
+
+
+class WireFormatError(CredenShareError):
+    """A blob could not be parsed or decrypted.
+
+    Deliberately covers both "the passcode is wrong" and "the bytes were altered". They are
+    indistinguishable by design — telling them apart would hand an attacker an oracle.
+    """
+
+
+# ── credential problems ──────────────────────────────────────────────────────────────
+
+
+class CredentialFormatError(CredenShareError):
+    """An API credential is not in the expected form."""
+
+
+class CustodySecretTransmittedError(CredenShareError):
+    """The full three-part credential was about to be sent.
+
+    Raised locally, before any request. The custody half must never reach the server: it is a
+    separate secret precisely so that the server *cannot* reconstruct the private key, and a
+    credential that has been transmitted whole should be rotated rather than reused.
+    """
+
+
+# ── API responses ────────────────────────────────────────────────────────────────────
+
+
+class ApiError(CredenShareError):
+    """A non-success response from the API."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: Optional[int] = None,
+        code: Optional[int] = None,
+        request_id: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        #: The API's own numeric error code, when it sent one.
+        self.code = code
+        #: Worth quoting in a support conversation.
+        self.request_id = request_id
+
+    def __str__(self) -> str:  # pragma: no cover - formatting only
+        parts = [super().__str__()]
+        if self.status is not None:
+            parts.append(f"HTTP {self.status}")
+        if self.code is not None:
+            parts.append(f"code {self.code}")
+        if self.request_id:
+            parts.append(f"request {self.request_id}")
+        return " (".join([parts[0], ", ".join(parts[1:]) + ")"]) if len(parts) > 1 else parts[0]
+
+
+class AuthenticationError(ApiError):
+    """The credential was rejected — unknown, revoked, or malformed."""
+
+
+class PermissionError_(ApiError):
+    """Authenticated, but not allowed: a missing scope, or a plan without API access.
+
+    Named with a trailing underscore to avoid shadowing the built-in ``PermissionError``,
+    which would be a genuinely confusing thing to do in a library people import broadly.
+    """
+
+
+class NotFoundError(ApiError):
+    """No such resource — or one belonging to another account.
+
+    The API reports those identically on purpose, so a credential cannot be used to discover
+    which short codes exist elsewhere.
+    """
+
+
+class RateLimitError(ApiError):
+    """Too many requests."""
+
+    def __init__(self, message: str, *, retry_after: Optional[int] = None, **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
+        #: Seconds to wait, from the ``Retry-After`` header. Always present on a 429.
+        self.retry_after = retry_after
+
+
+class QuotaExceededError(ApiError):
+    """The plan's share allowance is spent.
+
+    Distinct from :class:`RateLimitError`: waiting does not help, and the fix is a plan
+    change or expiring old shares.
+    """
+
+
+class ServiceUnavailableError(ApiError):
+    """Entitlements could not be resolved, so nothing was created.
+
+    Transient and safe to retry. The API returns this rather than guessing, because guessing
+    "unlimited" would let an account exceed its plan and guessing "exhausted" would break a
+    healthy one during a billing hiccup.
+    """
+
+
+class IdempotencyConflictError(ApiError):
+    """The Idempotency-Key was reused with a different request body.
+
+    Almost always this means a caller passed the same ``idempotency_key`` to two separate
+    ``create()`` calls expecting the second to be a no-op. It cannot be, and no argument to
+    ``create()`` makes it one: encryption is randomised per call — a fresh salt and IV every
+    time, which AES-GCM requires — so two calls with identical arguments, and even with the
+    same ``content_key``, still produce different ciphertext. The API is right to refuse.
+
+    What the header actually protects is a NETWORK retry, where the body is byte-identical
+    because it is the same already-encrypted request being sent again. This client performs
+    those retries itself, so the protection is already in place without a caller-supplied
+    key. Pass ``idempotency_key`` to control the value for your own tracing; do not pass it
+    expecting a second call to be deduplicated.
+    """

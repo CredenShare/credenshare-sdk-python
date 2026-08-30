@@ -1,0 +1,85 @@
+name: Release
+
+# Tag-triggered. Nothing here fires on a push to a branch: publishing to PyPI is
+# irreversible — a version number can be yanked but never reused — so it takes the
+# deliberate act of tagging.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify before anything is published
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+      - run: python -m credenshare.conformance -v
+
+      - name: The tag must match the version in pyproject.toml
+        # A mismatch produces a release that says one thing on GitHub and another on PyPI,
+        # and the version is how anyone reports which code they were running.
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VERSION=$(python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::tag v$TAG does not match pyproject version $VERSION"
+            exit 1
+          fi
+          echo "releasing $VERSION"
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          twine check dist/*
+
+      - name: The wheel must carry the vectors and pass its own self-check
+        # The last chance to catch a packaging mistake that dropped the fixture. Without
+        # this, a wheel can be published whose `python -m credenshare.conformance` fails for
+        # every user while the repository's own CI was green.
+        run: |
+          python -m venv /tmp/verify
+          /tmp/verify/bin/pip install dist/*.whl
+          cd /tmp && /tmp/verify/bin/python -m credenshare.conformance
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Trusted Publishing: PyPI mints a short-lived token for this workflow on this
+    # repository, so there is no long-lived API token in the repository's secrets to leak or
+    # rotate. `id-token: write` is what allows the OIDC exchange.
+    permissions:
+      id-token: write
+    environment:
+      name: pypi
+      url: https://pypi.org/p/credenshare
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

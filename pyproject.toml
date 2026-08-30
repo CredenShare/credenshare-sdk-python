@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "credenshare"
+version = "0.1.0"
+description = "End-to-end encrypted secret sharing. Encryption happens on your machine."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+authors = [{ name = "CredenShare" }]
+keywords = ["credenshare", "secrets", "encryption", "e2ee", "zero-knowledge"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Security :: Cryptography",
+]
+
+# Two dependencies, both ubiquitous and audited. A client whose whole claim is that it
+# encrypts correctly should not ask anyone to trust a long tail of transitive packages.
+dependencies = [
+  "cryptography>=41.0",
+  "httpx>=0.24",
+]
+
+[project.urls]
+Homepage = "https://credenshare.io"
+Source = "https://github.com/CredenShare/credenshare-sdk-python"
+Specification = "https://github.com/CredenShare/credenshare-sdk-python/blob/main/README.md#the-wire-specification"
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov", "mypy", "ruff", "respx"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/credenshare"]
+
+# The vectors live INSIDE the package, so `python -m credenshare.conformance` verifies the
+# exact artifact that was installed rather than a copy that happened to sit beside it.
+# the exact artifact they installed, rather than taking the badge's word for it.
+[tool.hatch.build.targets.sdist]
+include = ["src/", "tests/", "README.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# src layout: without this the suite only runs against an installed copy, and a contributor
+# cloning the repo gets an import error rather than a passing conformance run.
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+# Chosen rather than inherited, so a ruff release cannot change what this project considers
+# correct. Notably absent: the pyupgrade (UP) rules. They would rewrite `Dict[str, Any]` to
+# `dict[str, Any]` and `Optional[X]` to `X | None`, which is right for a 3.10+ package and
+# wrong for this one — the rewrite builds a wheel that installs on 3.9 and fails on the
+# first call. Supporting 3.9 is a deliberate choice: the machines running deploy scripts
+# are the last ones to be upgraded.
+select = ["E", "F", "I", "B", "SIM", "BLE", "RUF"]
+# RUF022 wants __all__ sorted alphabetically. These lists follow the wire
+# specification's section order instead, which is what makes a module readable
+# side by side with the document it implements.
+ignore = ["RUF022"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+warn_unreachable = true

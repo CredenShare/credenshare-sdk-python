@@ -95,3 +95,67 @@ class TestPaginationDoesNotTruncate:
     def test_total_pages_still_wins(self) -> None:
         assert ShareList(self._rows(25), page=1, limit=25, total_pages=1).has_more is False
         assert ShareList(self._rows(25), page=1, limit=25, total_pages=3).has_more is True
+
+
+class TestTheWalkTerminates:
+    """`has_more` falling back to "a full page probably has a successor" is permanently true
+    against a server that returns full pages and counts nothing. Bounding the walk is what
+    stops the truncation fix from becoming a non-terminating request loop.
+    """
+
+    def test_a_constant_page_echo_is_refused(self) -> None:
+        import httpx
+
+        from credenshare import CredenShare
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            # always answers page 1, whatever was asked for
+            return httpx.Response(
+                200,
+                json={
+                    "shares": [{"short_code": "a"}, {"short_code": "b"}],
+                    "pagination": {"page": 1, "limit": 2, "total_pages": 9},
+                },
+            )
+
+        client = CredenShare(
+            credential="crs_sk_live_abc123.authsecretvalue",
+            transport=httpx.MockTransport(handler),
+        )
+        seen = 0
+        with pytest.raises(ApiError, match="page"):
+            for _ in client.shares.iter_all(limit=2):
+                seen += 1
+                assert seen < 500, "iter_all is looping instead of raising"
+
+    def test_max_pages_is_reachable_and_named(self) -> None:
+        from credenshare.client import MAX_PAGES
+
+        assert MAX_PAGES > 0
+
+
+class TestArgumentConflictsAreNotFieldErrors:
+    def test_custody_with_an_explicit_wrap_is_refused(self) -> None:
+        """The raise site item 14 asked about, which had no test at all."""
+        from credenshare import CredenShare, InvalidArgumentError
+
+        client = CredenShare(credential="crs_sk_live_abc.authsecret.custodysecret")
+        with pytest.raises(InvalidArgumentError, match="not both"):
+            client.shares.create(
+                title="t",
+                fields=[{"key": "k", "value": "v", "type": "text"}],
+                custody=True,
+                item_key_wrap="whatever",
+            )
+
+    def test_it_is_catchable_as_both(self) -> None:
+        from credenshare import InvalidArgumentError
+
+        assert issubclass(InvalidArgumentError, CredenShareError)
+        assert issubclass(InvalidArgumentError, ValueError)
+
+    def test_a_field_problem_is_still_a_field_error(self) -> None:
+        """The two must not be the same class - that was the whole point."""
+        from credenshare import InvalidArgumentError, InvalidFieldError
+
+        assert InvalidArgumentError is not InvalidFieldError

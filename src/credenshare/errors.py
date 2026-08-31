@@ -28,6 +28,7 @@ __all__ = [
     "CustodySecretTransmittedError",
     "CustodySecretMissingError",
     "InvalidFieldError",
+    "InvalidArgumentError",
 ]
 
 
@@ -164,6 +165,17 @@ class InvalidFieldError(CredenShareError, ValueError):
     Also a ``ValueError``, so code that already caught one keeps working; being a
     :class:`CredenShareError` is what makes the README's blanket ``except CredenShareError``
     the genuine catch-all it is described as. Node's twin is ``InvalidFieldError`` too.
+    """
+
+
+class InvalidArgumentError(CredenShareError, ValueError):
+    """Arguments to an SDK call contradict each other.
+
+    Separate from :class:`InvalidFieldError`, which is specifically about a field object not
+    matching the wire format. Collapsing the two would leave one of them with a docstring that
+    does not describe half its call sites.
+
+    Also a ``ValueError``, so code that already caught one keeps working.
     """
 
 

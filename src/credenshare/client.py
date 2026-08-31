@@ -24,7 +24,7 @@ from .errors import (
     CustodySecretTransmittedError,
     DeliveryUnknownError,
     IdempotencyConflictError,
-    InvalidFieldError,
+    InvalidArgumentError,
     NotFoundError,
     PermissionError_,
     QuotaExceededError,
@@ -36,6 +36,13 @@ __all__ = ["CredenShare", "Credential", "Share", "ShareList", "ShareSummary"]
 
 DEFAULT_BASE_URL = "https://api.credenshare.io/v1"
 DEFAULT_LINK_ORIGIN = "https://crs.sh"
+
+#: The most pages :meth:`_Shares.iter_all` will walk before giving up.
+#:
+#: The end of a result set is not always knowable: a server that omits every paging figure and
+#: returns full pages forever cannot be told from a very large account. An unbounded walk
+#: against one never returns. At the default page size of 100 this is ten million shares.
+MAX_PAGES = 100_000
 
 #: The only accepted encryption type. Plaintext creates are refused by the server, and this
 #: client has no way to express one.
@@ -250,7 +257,7 @@ class _Shares:
         content_key = content_key if content_key is not None else crypto.new_content_key()
 
         if custody and item_key_wrap is not None:
-            raise InvalidFieldError("pass either custody=True or item_key_wrap, not both")
+            raise InvalidArgumentError("pass either custody=True or item_key_wrap, not both")
         if custody:
             secret = self._client.credential.custody_secret
             if not secret:
@@ -334,6 +341,21 @@ class _Shares:
             yield from batch
             if not batch.has_more:
                 return
+
+            # The API echoing a page number other than the one asked for makes progress
+            # unobservable, so no termination condition can be trusted. Refuse rather than
+            # loop - Go and Rust do the same.
+            if batch.page != page:
+                raise ApiError(
+                    f"asked for page {page} and the API answered with page {batch.page}, so "
+                    f"paging cannot be trusted to terminate"
+                )
+            if page >= MAX_PAGES:
+                raise ApiError(
+                    f"stopped after {MAX_PAGES} pages without the API signalling the end of "
+                    f"the result set. A walk that cannot terminate is worse than one that "
+                    f"stops and says so."
+                )
             page += 1
 
     def get(self, short_code: str) -> ShareSummary:

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "credenshare"
-version = "0.1.0"
+version = "0.1.1"
 description = "End-to-end encrypted secret sharing. Encryption happens on your machine."
 readme = "README.md"
 license = "Apache-2.0"

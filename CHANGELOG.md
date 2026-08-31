@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.1 — released 2026-08-30
+
+`v0.1.0` was tagged before the release-facing files were corrected, so the artifact resolved at
+that tag told consumers to install unpinned and its changelog denied its own release. This
+version contains those corrections. Nothing about the cryptography or the wire format changed
+between the two; the conformance fixture is byte-identical.
+
+### Fixed
+
+- **`iter_all` terminates.** The `has_more` fallback added in 0.1.0 removed a silent
+  truncation and left an unbounded walk in its place: against a server that returns full pages
+  and sends no counts, `iter_all` was measured yielding 30,001 rows over 301 requests and still
+  going. It now refuses a server that echoes a page number other than the one requested, and
+  stops at `MAX_PAGES`.
+- **`InvalidArgumentError`** is raised for `create(custody=True, item_key_wrap=...)`, which is
+  an argument conflict rather than a malformed field. 0.1.0 raised `InvalidFieldError`, whose
+  docstring did not cover that call site. Both subclass `CredenShareError` and `ValueError`.
+
+### Documentation
+
+- The README install line names the tag, and the changelog no longer describes 0.1.0 as
+  unreleased.
+
 ## 0.1.0 — released 2026-08-30
 
 First release.

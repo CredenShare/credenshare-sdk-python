@@ -198,4 +198,10 @@ class IdempotencyConflictError(ApiError):
     those retries itself, so the protection is already in place without a caller-supplied
     key. Pass ``idempotency_key`` to control the value for your own tracing; do not pass it
     expecting a second call to be deduplicated.
+
+    The API also answers 409 with error code 106 when an identical request is still IN
+    FLIGHT. That is a different situation with the opposite remedy: the first call has not
+    finished, so wait briefly and repeat the same request unchanged. Changing the key or the
+    body there turns a retry into a duplicate. Both arrive as this class; ``err.code``
+    separates them.
     """

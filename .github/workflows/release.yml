@@ -106,6 +106,10 @@ jobs:
       - name: Publish the release notes
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job never checks the repository out - it only downloads the built dist - so
+          # gh has no git remote to infer the repo from and exits 1. The other three happen to
+          # check out for their own reasons and did not hit it.
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release create "$GITHUB_REF_NAME"             --title "$GITHUB_REF_NAME"             --notes "Install:
 

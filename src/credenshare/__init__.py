@@ -16,6 +16,9 @@ The implementation follows the published wire specification, and its correctness
 by `conformance/vectors.v1.json` rather than by this code.
 """
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _installed_version
+
 from . import webhooks
 from .client import (
     CredenShare,
@@ -61,7 +64,13 @@ from .errors import (
 )
 from .webhooks import WebhookVerificationError
 
-__version__ = "0.1.0"
+#: Read from the installed distribution rather than written here, because a second copy of the
+#: version is a second thing to forget. It said "0.1.0" while 0.1.3 was on PyPI, and nothing
+#: noticed: the release guard compared the TAG to pyproject.toml and never to this.
+try:
+    __version__ = _installed_version("credenshare")
+except PackageNotFoundError:  # a checkout with no installed distribution
+    __version__ = "0.0.0+source"
 
 __all__ = [
     "__version__",

@@ -5,13 +5,9 @@ never reaches CredenShare, which is what makes "we cannot read your data" a prop
 system rather than a promise.
 
 ```bash
-pip install "git+https://github.com/CredenShare/credenshare-sdk-python@v0.1.3"
+pip install credenshare
 ```
-> Not on PyPI yet. The command above installs from source, which is a
-> supported way to use this SDK - the conformance self-check runs the same either way.
 
-> Pinned to a release tag on purpose: an unpinned git install tracks the default branch,
-> which is not a release. Bump the tag when you upgrade - see [`VERSIONING.md`](VERSIONING.md).
 
 
 ```python

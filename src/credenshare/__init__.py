@@ -48,6 +48,7 @@ from .errors import (
     CustodySecretTransmittedError,
     DeliveryUnknownError,
     IdempotencyConflictError,
+    InvalidFieldError,
     MalformedKeyError,
     MissingKeyError,
     NotFoundError,
@@ -57,6 +58,7 @@ from .errors import (
     ServiceUnavailableError,
     WireFormatError,
 )
+from .webhooks import WebhookVerificationError
 
 __version__ = "0.1.0"
 
@@ -86,6 +88,8 @@ __all__ = [
     "CredenShareError",
     "CredentialFormatError",
     "CustodySecretMissingError",
+    "InvalidFieldError",
+    "WebhookVerificationError",
     "CustodySecretTransmittedError",
     "DeliveryUnknownError",
     "IdempotencyConflictError",

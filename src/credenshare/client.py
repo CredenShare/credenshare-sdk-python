@@ -24,6 +24,7 @@ from .errors import (
     CustodySecretTransmittedError,
     DeliveryUnknownError,
     IdempotencyConflictError,
+    InvalidFieldError,
     NotFoundError,
     PermissionError_,
     QuotaExceededError,
@@ -46,6 +47,10 @@ _QUOTA_EXCEEDED_CODE = 61
 
 #: The API's numeric code for an Idempotency-Key replayed with a different body.
 _IDEMPOTENCY_CONFLICT_CODE = 105
+
+#: The identical request is still in flight. Wait briefly and repeat it unchanged - the
+#: opposite remedy to 105, which means the body genuinely differed.
+_IDEMPOTENCY_IN_FLIGHT_CODE = 106
 
 #: Retries for network failures. Only connection and timeout errors are retried, never an
 #: HTTP status: a 5xx may have committed, and this client cannot tell. A create is safe to
@@ -174,9 +179,19 @@ class ShareList(List[ShareSummary]):
 
     @property
     def has_more(self) -> bool:
-        if self.total_pages is None:
-            return False
-        return self.page < self.total_pages
+        """Whether another page exists.
+
+        Falls back rather than answering ``False`` when the server sends no paging figures:
+        reporting "no more" on a full page is what makes :meth:`iter_all` stop after page one
+        and return a fraction of the account as though it were all of it. Node, Go and Rust
+        all fall back; Python was the only one that did not.
+        """
+        if self.total_pages is not None:
+            return self.page < self.total_pages
+        if self.total is not None:
+            return self.page * self.limit < self.total
+        # Nothing to go on but the page itself: a full page probably has a successor.
+        return len(self) >= self.limit > 0
 
 
 class _Shares:
@@ -235,7 +250,7 @@ class _Shares:
         content_key = content_key if content_key is not None else crypto.new_content_key()
 
         if custody and item_key_wrap is not None:
-            raise ValueError("pass either custody=True or item_key_wrap, not both")
+            raise InvalidFieldError("pass either custody=True or item_key_wrap, not both")
         if custody:
             secret = self._client.credential.custody_secret
             if not secret:
@@ -518,7 +533,13 @@ def _error_for(response: httpx.Response) -> ApiError:
         return PermissionError_(message, **kwargs)
     if response.status_code == 404:
         return NotFoundError(message, **kwargs)
-    if response.status_code == 409 and code == _IDEMPOTENCY_CONFLICT_CODE:
+    if response.status_code == 409 and code in (
+        _IDEMPOTENCY_CONFLICT_CODE,
+        _IDEMPOTENCY_IN_FLIGHT_CODE,
+    ):
+        # Both arrive as IdempotencyConflictError so `except` keeps working; err.code
+        # separates them, and the docstring says which is which. 106 previously fell through
+        # to a bare ApiError, so the documented discrimination could not be performed at all.
         return IdempotencyConflictError(message, **kwargs)
     if response.status_code == 429:
         retry_after = response.headers.get("retry-after")

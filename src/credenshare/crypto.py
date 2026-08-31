@@ -35,7 +35,12 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-from .errors import MalformedKeyError, MissingKeyError, WireFormatError
+from .errors import (
+    InvalidFieldError,
+    MalformedKeyError,
+    MissingKeyError,
+    WireFormatError,
+)
 
 __all__ = [
     "FIELD_TYPES",
@@ -273,22 +278,22 @@ def validate_fields(fields: Sequence[Dict[str, Any]]) -> None:
     """
     for index, field in enumerate(fields):
         if not isinstance(field, dict):
-            raise ValueError(f"field {index} is not an object")
+            raise InvalidFieldError(f"field {index} is not an object")
 
         if "key" not in field:
             for wrong in ("label", "name", "title"):
                 if wrong in field:
-                    raise ValueError(
+                    raise InvalidFieldError(
                         f"field {index} uses {wrong!r} for its label; the member is 'key'. "
                         f"{wrong!r} is silently ignored, and the field would render with a "
                         "blank label and no error."
                     )
-            raise ValueError(f"field {index} has no 'key' (its visible label)")
+            raise InvalidFieldError(f"field {index} has no 'key' (its visible label)")
 
         if "value" not in field:
-            raise ValueError(f"field {index} has no 'value'")
+            raise InvalidFieldError(f"field {index} has no 'value'")
         if "type" not in field:
-            raise ValueError(f"field {index} has no 'type'; one of {', '.join(FIELD_TYPES)}")
+            raise InvalidFieldError(f"field {index} has no 'type'; one of {', '.join(FIELD_TYPES)}")
 
 
 # ── sections 2.3 and 2.4: tokens derived from the key ────────────────────────────────

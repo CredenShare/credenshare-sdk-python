@@ -205,6 +205,8 @@ fixes:
 | `IdempotencyConflictError` | the key was reused with a different body | expected when you reuse your own key — encryption is randomised, so the body always differs |
 | `DeliveryUnknownError` | delivered, but no response was read | it may have committed. Repeat the identical request; a fresh key here is how one secret becomes two |
 | `CustodySecretMissingError` | `custody=True` on a two-part credential | use a credential that carries the third part |
+| `InvalidFieldError` | a field is not `{key, value, type}` | `key` is the visible label — not `label`, `name` or `title`. Also a `ValueError` |
+| `WebhookVerificationError` | a delivery did not verify | treat it as a forgery, not a transient error |
 | `ApiError` | any other refusal | the base class — `err.status`, `err.code` and `err.request_id` carry the detail |
 
 ## Requirements

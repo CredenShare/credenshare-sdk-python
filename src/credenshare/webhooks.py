@@ -13,6 +13,8 @@ import re
 import time
 from typing import Iterable, Optional
 
+from .errors import CredenShareError
+
 __all__ = ["verify", "WebhookVerificationError", "DEFAULT_TOLERANCE_SECONDS", "SIGNATURE_HEADER"]
 
 #: How far a delivery's timestamp may sit from your clock, in either direction.
@@ -28,7 +30,7 @@ SIGNATURE_HEADER = "X-CredenShare-Signature"
 _SIGNATURE_HEADER = SIGNATURE_HEADER
 
 
-class WebhookVerificationError(Exception):
+class WebhookVerificationError(CredenShareError):
     """A delivery did not verify. Treat it as a forgery, not as a transient error."""
 
 

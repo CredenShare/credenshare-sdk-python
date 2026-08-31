@@ -27,6 +27,7 @@ __all__ = [
     "CredentialFormatError",
     "CustodySecretTransmittedError",
     "CustodySecretMissingError",
+    "InvalidFieldError",
 ]
 
 
@@ -157,6 +158,15 @@ class ServiceUnavailableError(ApiError):
     """
 
 
+class InvalidFieldError(CredenShareError, ValueError):
+    """A field object does not match the wire format.
+
+    Also a ``ValueError``, so code that already caught one keeps working; being a
+    :class:`CredenShareError` is what makes the README's blanket ``except CredenShareError``
+    the genuine catch-all it is described as. Node's twin is ``InvalidFieldError`` too.
+    """
+
+
 class CustodySecretMissingError(CredenShareError):
     """Custody was requested but the credential carries no custody secret.
 
@@ -166,8 +176,13 @@ class CustodySecretMissingError(CredenShareError):
     """
 
 
-class DeliveryUnknownError(CredenShareError):
+class DeliveryUnknownError(ApiError):
     """The request reached the API but its outcome could not be read.
+
+    Deliberately an :class:`ApiError` even though no response was read. It replaced
+    :class:`ServiceUnavailableError` on the read-timeout path, and that is an ApiError — a
+    caller with ``except ApiError`` around a create would otherwise have stopped catching a
+    case it caught before, and found out in production.
 
     Distinct from :class:`ServiceUnavailableError`, which means nothing was created. Here the
     bytes were delivered and the server may well have committed — a create that raises this
@@ -178,8 +193,8 @@ class DeliveryUnknownError(CredenShareError):
     recognise it, or reconcile by listing before retrying.
     """
 
-    def __init__(self, message: str, *, attempts: int = 1) -> None:
-        super().__init__(message)
+    def __init__(self, message: str, *, attempts: int = 1, **kwargs: Any) -> None:
+        super().__init__(message, **kwargs)
         #: How many times delivery was attempted before giving up.
         self.attempts = attempts
 

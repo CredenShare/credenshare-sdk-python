@@ -4,6 +4,45 @@
 
 First release.
 
+### Error hierarchy
+
+Everything this SDK raises is now inside `CredenShareError`, and everything the API refused is
+inside `ApiError`. Both were true of most errors and quietly false of several, which is the
+worst shape for a documented catch-all to have: the branch exists, it looks right, and it
+catches nothing.
+
+- **`DeliveryUnknownError` is an `ApiError`.** It replaced `ServiceUnavailableError` on the
+  read-timeout path, and that was one. Had it stayed outside, `except ApiError` around a
+  create would have stopped catching a case it caught before, and the discovery would have
+  been a production incident rather than a compile error.
+- **`InvalidFieldError`** replaces the bare `ValueError` from `validate_fields` and from
+  `create(custody=True, item_key_wrap=...)`. It subclasses `ValueError` as well, so existing
+  handlers keep working. Node's twin is `InvalidFieldError` too.
+- **`WebhookVerificationError` subclasses `CredenShareError`** and is exported from the
+  package root as well as from `credenshare.webhooks`.
+
+### Fixed
+
+- **`ShareList.has_more` no longer answers `False` when the server omits the pagination
+  block**, so `iter_all` no longer stops after page one and reports a fraction of an account
+  as all of it. It falls back to `total`, then to whether the page came back full — matching
+  Node, Go and Rust, which all did this already. Python was the only one that truncated.
+- **Error code 106 (an identical request still in flight) is distinguishable.** It fell
+  through to a bare `ApiError`, so the `err.code` discrimination the docs describe could not
+  be performed. Both 105 and 106 arrive as `IdempotencyConflictError` now and `err.code` tells
+  them apart — they have opposite remedies: 105 means stop and fix the caller, 106 means wait
+  briefly and repeat the same request unchanged.
+- `_unb64url` validates. `get()` and `expire()` percent-encode the short code. A read timeout
+  reports `DeliveryUnknownError` rather than claiming nothing was created. The webhook
+  timestamp is parsed canonically.
+
+### Added
+
+- `create(custody=True)`, plus `item_key_wrap` and `organization_id`. Without it every
+  API-created share was custody `"none"` — the link was the only way back to the content.
+- `webhooks.SIGNATURE_HEADER`, previously private and the only one of the four clients with no
+  importable constant for it.
+
 - End-to-end encrypted share creation, listing and expiry against the `/v1` API. Encryption
   happens locally; the content key never reaches CredenShare.
 - Split API credentials (`crs_sk_live_<keyId>.<authSecret>[.<custodySecret>]`). The custody

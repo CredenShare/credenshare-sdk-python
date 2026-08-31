@@ -96,8 +96,10 @@ jobs:
         # means the two files came from different generator runs, and that is worth knowing
         # before it becomes a difference that matters.
         #
-        # The URL is configuration rather than a constant because the specification lives in
-        # a private repository, so this needs a URL the runner can actually reach: a release
+        # The URL is configuration rather than a constant because there is no canonical
+        # public copy to hardcode: the specification and the vectors ship in this repository.
+        # Point the variable at one when a canonical copy exists - or at a candidate fixture
+        # on a branch, before publishing it.
         # asset, a raw URL with a token in the header, or a published copy on the docs site.
         env:
           # Opt-in. This SDK is self-contained: the spec and the vectors both ship in

@@ -12,6 +12,16 @@ is what makes "we cannot read your data" a property of the system rather than a 
     )
     print(share.link)   # contains the key in its fragment - treat it as the secret
 
+A secure request is the mirror image: you publish a public key and collect content sealed to
+it, and the 32-byte seed this call returns is the only thing that can ever open a submission.
+
+    req = crs.requests.create(
+        title="Onboarding credentials",
+        fields=[{"item": "Staging database password", "type": "password"}],
+    )
+    save_somewhere(req.seed.hex())   # never transmitted; without it the submissions are lost
+    print(req.collect_link)          # keyless - this is the one you hand to a human
+
 The implementation follows the published wire specification, and its correctness is defined
 by `conformance/vectors.v1.json` rather than by this code.
 """
@@ -23,23 +33,36 @@ from . import webhooks
 from .client import (
     CredenShare,
     Credential,
+    DailyView,
+    RequestDeletion,
+    RequestList,
+    RequestSummary,
+    SecureRequest,
     Share,
+    ShareCounts,
     ShareList,
     ShareSummary,
+    Stats,
+    Submission,
+    SubmissionPage,
 )
 from .crypto import (
     FIELD_TYPES,
+    SEED_LENGTH,
     SeedKeypair,
     access_token,
     custody_keypair,
     decode_fragment,
     decrypt_content,
+    decrypt_submission,
     encode_fragment,
     encrypt_content,
     keypair_from_seed,
     new_content_key,
+    new_seed,
     passcode_verifier,
     unwrap_with_seed,
+    validate_fields,
     wrap_to_public_key,
 )
 from .errors import (
@@ -59,6 +82,7 @@ from .errors import (
     PermissionError_,
     QuotaExceededError,
     RateLimitError,
+    RequestSeedTransmittedError,
     ServiceUnavailableError,
     WireFormatError,
 )
@@ -79,19 +103,32 @@ __all__ = [
     "Share",
     "ShareList",
     "ShareSummary",
+    "SecureRequest",
+    "RequestSummary",
+    "RequestList",
+    "RequestDeletion",
+    "Submission",
+    "SubmissionPage",
+    "Stats",
+    "ShareCounts",
+    "DailyView",
     "webhooks",
     "FIELD_TYPES",
+    "SEED_LENGTH",
     "SeedKeypair",
     "access_token",
     "custody_keypair",
     "decode_fragment",
     "decrypt_content",
+    "decrypt_submission",
     "encode_fragment",
     "encrypt_content",
     "keypair_from_seed",
     "new_content_key",
+    "new_seed",
     "passcode_verifier",
     "unwrap_with_seed",
+    "validate_fields",
     "wrap_to_public_key",
     "ApiError",
     "AuthenticationError",
@@ -110,6 +147,7 @@ __all__ = [
     "PermissionError_",
     "QuotaExceededError",
     "RateLimitError",
+    "RequestSeedTransmittedError",
     "ServiceUnavailableError",
     "WireFormatError",
 ]

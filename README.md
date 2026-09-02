@@ -89,6 +89,148 @@ credential would be an enumeration bypass. Open the link in a browser.
 
 ---
 
+## Secure requests
+
+A share hands out a secret. A **secure request** collects one: you publish a public key, and
+whoever fills the link in seals their answer to it in their own browser. One submitter can
+never read another's, and neither can we.
+
+```python
+req = crs.requests.create(
+    title="Onboarding credentials",
+    fields=[{"item": "Staging database password", "type": "password"}],
+)
+
+save_somewhere(req.seed.hex())  # 32 bytes, never transmitted
+print(req.collect_link)         # https://crs.sh/r/aB3dEf12 - hand this to a human
+print(req.access_link)          # the same link + the seed in its fragment - keep this
+```
+
+**The seed is the whole point of that call.** It is generated on your machine, only the
+public half is sent, and it is the only thing that can ever open a submission. Store it
+before you do anything else with the result: a request whose seed was dropped keeps
+collecting submissions that nobody — you, us, or a court order — can read.
+
+Two links, and the difference matters. `collect_link` is **keyless**: holding it lets
+somebody submit and never read, which is what makes it safe to paste into a ticket.
+`access_link` carries the seed in its fragment, so it *is* the ability to read every
+submission on any device with nothing stored — treat it as the secret itself. Both are also
+available from a stored seed later, as `crs.collect_link_for(code)` and
+`crs.access_link_for(code, seed)`.
+
+`req.seed` is `bytes`, but it does not print itself: `print(req.seed)` and an f-string both
+render `<32 bytes withheld>`, and so do `repr(req)`, `dataclasses.asdict(req)` and a log
+line that interpolates either. Persisting it takes an explicit `req.seed.hex()`. The seed
+reaching a log is the failure this SDK cannot undo for you, so the accidental paths are
+closed and the deliberate one is one call.
+
+Note the field member: a request's fields use **`item`** (the prompt you are asking for),
+where a share's use `key`. Reaching for `key` here is silently accepted by the API and
+renders a form field with no label, so this SDK refuses it. So is a request with **no**
+fields, which the API creates happily and which renders as an error page for whoever you
+send it to.
+
+### Reading the submissions
+
+```python
+subs = crs.requests.submissions(req.short_code)
+
+for sub in subs:
+    fields = sub.decrypt(req.seed)          # or decrypt_submission(sub.data, req.seed)
+    store(fields)   # [{"key": "Staging database password", "value": "...", ...}]
+
+subs.count                                  # what the API said it returned
+subs.skipped_not_end_to_end_encrypted       # what it declined to return, and why below
+```
+
+`submissions` returns the **sealed blobs**; decryption is a separate call that takes the
+seed. That split is deliberate — the SDK never asks for the seed until you decide to read
+something. Note what the example does *not* do: printing the decrypted fields writes the
+credential a human just handed you into whatever collected stdout.
+
+**One call, no paging.** This endpoint answers with every submission and a `count`, and it
+reads neither `page` nor `limit` — so `submissions()` takes neither, and `iter_submissions()`
+makes exactly one request and stops. All four SDKs behave this way.
+
+**The two encodings on this one feature.** A request's `public_key` goes out as **unpadded
+base64url**; a submission's `data` comes back as **padded standard base64**. Pass `sub.data`
+to `decrypt_submission(data, seed)` (or `sub.decrypt(seed)`) exactly as it arrived —
+`data` first and named `data`, after the API field it comes from, so
+`decrypt_submission(data=sub.data, seed=req.seed)` reads the same in all four SDKs.
+Re-encoding it — running it through a base64url encoder because the public key used one —
+fails as a *wrong key* rather than as a wrong decoder, which is a long way from the mistake.
+
+Submissions stored before their request had a public key are held server-side in a form the
+API *could* decrypt, and it declines to hand them over rather than making a credential a way
+to read plaintext. They are counted in `subs.skipped_not_end_to_end_encrypted`, so a
+reconciliation against the dashboard can say why a page looks short.
+
+### A reproducible keypair, for automation with no state
+
+Pass your own seed when a runner needs to derive the same keypair on every machine:
+
+```python
+from credenshare import crypto
+
+seed = crypto.custody_keypair(crs.credential.custody_secret).seed
+req = crs.requests.create(title="Nightly collect", fields=[...], seed=seed)
+```
+
+The custody secret is the third part of your credential and never leaves the machine, so the
+keypair is reproducible from the credential alone, anywhere, with nothing stored. Revoking
+the key revokes the ability to read in the same motion.
+
+### Listing, and the two-step delete
+
+```python
+for row in crs.requests.list(limit=50):     # limit defaults to 25, capped at 100
+    print(row.short_code, row.expired_at, row.public_key)
+
+result = crs.requests.delete("aB3dEf12")
+result.outcome     # "expired" - new submissions stop, existing ones survive
+crs.requests.delete("aB3dEf12").outcome   # "deleted" - irreversible
+```
+
+Deleting is two calls, not one, and the result says which happened. The second is
+irreversible: the sealed submissions go with it, and we never held the seed that could have
+opened them.
+
+One asymmetry worth knowing: a request's `passcode` **is** transmitted. It gates a form the
+server renders for a stranger's browser, so the server has to be able to evaluate it. A
+share's passcode is mixed into the content key and reaches us only as a one-way verifier.
+Do not reach for one expecting the other.
+
+---
+
+## Stats
+
+```python
+stats = crs.stats.get()
+stats.shares.active, stats.shares.expired, stats.shares.total_viewed
+
+for day in stats.daily_views:      # oldest first, zero-filled, may be empty
+    print(day.date, day.count)
+```
+
+The per-member breakdown the dashboard shows is deliberately absent: a key scoped to read
+statistics should not become a way to enumerate colleagues.
+
+---
+
+## Endpoints this SDK does not model
+
+```python
+body = crs.call("POST", "/some/new/endpoint", json={"a": 1})
+```
+
+Same transport, same retries, same error types. An `Idempotency-Key` is added on a **POST,
+PUT or PATCH** when you have not supplied one — the methods that can create, which are the
+ones the API consults it on. Never on a GET or a DELETE, where the backend does not read it
+and a generated key would buy nothing. Your own key is never overwritten and is forwarded on
+any method, `DELETE` included.
+
+---
+
 ## Verifying webhooks
 
 ```python
@@ -159,9 +301,7 @@ repository as [`CRYPTO_WIRE_SPEC.md`](CRYPTO_WIRE_SPEC.md). **The specification 
 normative — not this code**, and not any other implementation. Where they disagree, this
 is the bug.
 
-Versioning, and how a release is cut, is in [`VERSIONING.md`](VERSIONING.md). Worth reading
-before the first one: this SDK is not on a registry yet, and the release path needs
-per-repository settings that do not exist yet.
+Versioning, and how a release is cut, is in [`VERSIONING.md`](VERSIONING.md).
 
 
 The application and the four SDKs share no code, deliberately: a package the production
@@ -204,6 +344,8 @@ fixes:
 | `IdempotencyConflictError` | the key was reused with a different body | expected when you reuse your own key — encryption is randomised, so the body always differs |
 | `DeliveryUnknownError` | delivered, but no response was read | it may have committed. Repeat the identical request; a fresh key here is how one secret becomes two |
 | `CustodySecretMissingError` | `custody=True` on a two-part credential | use a credential that carries the third part |
+| `CustodySecretTransmittedError` | the custody half was about to be sent | rotate the credential; it should never have left the machine |
+| `RequestSeedTransmittedError` | a request seed was about to be sent | expire the request and create a new one under a new seed — do not retry |
 | `InvalidFieldError` | a field is not `{key, value, type}` | `key` is the visible label — not `label`, `name` or `title`. Also a `ValueError` |
 | `WebhookVerificationError` | a delivery did not verify | treat it as a forgery, not a transient error |
 | `ApiError` | any other refusal | the base class — `err.status`, `err.code` and `err.request_id` carry the detail |

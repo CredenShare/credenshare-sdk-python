@@ -51,10 +51,13 @@ __all__ = [
     "decrypt_content",
     "access_token",
     "passcode_verifier",
+    "SEED_LENGTH",
+    "new_seed",
     "keypair_from_seed",
     "custody_keypair",
     "wrap_to_public_key",
     "unwrap_with_seed",
+    "decrypt_submission",
     "SeedKeypair",
 ]
 
@@ -318,6 +321,18 @@ def passcode_verifier(passcode: str) -> str:
 # ── section 3: seed-derived P-256 keypairs ───────────────────────────────────────────
 
 
+#: The length of a secure request's seed, in bytes.
+#:
+#: Exported because a caller who stores or transports one needs to check it, and because the
+#: alternative is a magic 32 in their code. The same figure as a content key's length and
+#: deliberately a separate name: the two are not interchangeable, and a constant called
+#: KEY_LENGTH used for both is how they come to be.
+#:
+#: Named identically across the four SDKs (``SEED_LENGTH`` / ``SeedLength``), so a team
+#: reading two of them at once does not have to check whether they agree.
+SEED_LENGTH = _KEY_LEN
+
+
 @dataclass(frozen=True)
 class SeedKeypair:
     """A P-256 keypair reconstructed from a 32-byte seed.
@@ -336,6 +351,24 @@ class SeedKeypair:
     def public_key_b64url(self) -> str:
         return _b64url(self.public_key_raw)
 
+    def __repr__(self) -> str:  # pragma: no cover - formatting only
+        # Hand-written because the generated one prints `seed` AND `scalar`, and the scalar
+        # IS the private key. A dataclass repr is what a logger, a pytest assertion diff and
+        # a bare `print(keypair)` all reach for, so the default would put a private key in
+        # whichever of those ran first. The public half is safe and is what identifies it.
+        return f"<SeedKeypair {self.public_key_b64url[:12]}... (seed and scalar withheld)>"
+
+
+def new_seed() -> bytes:
+    """A fresh 32-byte seed from the OS CSPRNG.
+
+    The same draw as :func:`new_content_key` and deliberately a separate name. A content key
+    encrypts content directly; a seed is reduced to a P-256 scalar by
+    :func:`keypair_from_seed` and never touches AES. Nothing stops you passing one where the
+    other belongs, so the two call sites are made to read differently.
+    """
+    return os.urandom(_KEY_LEN)
+
 
 def keypair_from_seed(seed: bytes) -> SeedKeypair:
     """Derive a P-256 keypair from a 32-byte seed (section 3).
@@ -344,8 +377,8 @@ def keypair_from_seed(seed: bytes) -> SeedKeypair:
     bias negligible. Reducing mod ``n-1`` and adding one yields a scalar in ``[1, n-1]``,
     excluding zero, which is not a valid private key.
     """
-    if len(seed) != _KEY_LEN:
-        raise ValueError(f"a seed is {_KEY_LEN} bytes, got {len(seed)}")
+    if len(seed) != SEED_LENGTH:
+        raise ValueError(f"a seed is {SEED_LENGTH} bytes, got {len(seed)}")
 
     wide = _hkdf(seed, b"", "crs-ecdh-p256-scalar", 48)
     scalar = (int.from_bytes(wide, "big") % (_P256_ORDER - 1)) + 1
@@ -450,3 +483,34 @@ def unwrap_with_seed(wrapped: str, seed: bytes) -> bytes:
         return AESGCM(wrapping_key).decrypt(iv, body, None)
     except Exception as exc:
         raise WireFormatError("could not unwrap: wrong key, or the blob was altered") from exc
+
+
+def decrypt_submission(data: str, seed: bytes) -> List[Dict[str, Any]]:
+    """Open a secure-request submission with the seed kept when the request was created.
+
+    The signature is ``(data, seed)`` in all four SDKs, and the first parameter is named
+    ``data`` because that is the API field it comes from — :attr:`credenshare.Submission.data`
+    passes straight in, so a keyword call reads as ``decrypt_submission(data=sub.data, ...)``
+    rather than renaming the value on its way across one call.
+
+    The sealed value is a section 4 wrap whose payload is a JSON field array — the same shape
+    :func:`decrypt_content` returns, so a submission and a share's content read alike once
+    open. The member carrying each label is ``key``, and its value is what the person typed;
+    the ``item`` prompt you asked for on create arrives back as that ``key``.
+
+    ``data`` is STANDARD base64, with padding — not the base64url the request's public key
+    travels as. Both encodings appear on this one feature, and feeding this the wrong one
+    yields a blob that will not open rather than an error that says so.
+
+    A submission stored before the request had a public key is legacy plaintext, not a wrap.
+    The API refuses to hand those over at all, so what arrives here is always sealed; a blob
+    that is neither surfaces as :class:`WireFormatError` rather than being guessed at.
+    """
+    plaintext = unwrap_with_seed(data, seed)
+    try:
+        fields = json.loads(plaintext.decode("utf-8"))
+    except Exception as exc:
+        raise WireFormatError("the submission unwrapped, but its payload is not JSON") from exc
+    if not isinstance(fields, list):
+        raise WireFormatError("decrypted submission is not a field array")
+    return fields

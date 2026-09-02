@@ -26,6 +26,7 @@ __all__ = [
     "DeliveryUnknownError",
     "CredentialFormatError",
     "CustodySecretTransmittedError",
+    "RequestSeedTransmittedError",
     "CustodySecretMissingError",
     "InvalidFieldError",
     "InvalidArgumentError",
@@ -78,6 +79,23 @@ class CustodySecretTransmittedError(CredenShareError):
     Raised locally, before any request. The custody half must never reach the server: it is a
     separate secret precisely so that the server *cannot* reconstruct the private key, and a
     credential that has been transmitted whole should be rotated rather than reused.
+    """
+
+
+class RequestSeedTransmittedError(CredenShareError):
+    """A secure request's private seed was about to be transmitted.
+
+    The mirror of :class:`CustodySecretTransmittedError`, for the other secret this SDK holds
+    that the server must never see. A request's seed IS the ability to read its submissions:
+    the public half is published so submitters can seal to it, and the seed stays with the
+    caller, which is what makes one submitter unable to read another's and us unable to read
+    any of them. If it reaches the wire that property is gone, and the remedy is to expire the
+    request and create a new one under a new seed — not to retry.
+
+    Raised by :meth:`credenshare.client._Requests.create`, which scans the serialized body
+    and the outgoing ``Idempotency-Key`` for the seed in every encoding somebody
+    hand-rolling one would reach for. An assertion rather than a code review, so a later edit
+    that adds a member carrying the seed fails here instead of in production.
     """
 
 

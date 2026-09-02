@@ -430,3 +430,134 @@ def test_retries_are_bounded_and_surface_as_unavailable() -> None:
         crs.shares.list()
 
     assert len(attempts) == 2
+
+
+# -- the generic escape hatch ---------------------------------------------------------
+
+
+def test_the_escape_hatch_generates_an_idempotency_key_on_a_non_get() -> None:
+    """The API requires the header on every non-GET, and refuses the call without it.
+
+    A caller reaching `call()` for an endpoint this SDK does not model yet should not have to
+    know that, and should not get a 400 for leaving out a header whose only job is to protect
+    a retry this client performs on their behalf.
+    """
+    rec = Recorder(status=200, body={})
+    with make_client(rec) as crs:
+        crs.call("POST", "/some/future/endpoint", json={"a": 1})
+
+    assert rec.requests[0].headers.get("idempotency-key")
+
+
+def test_the_escape_hatch_never_overwrites_a_supplied_key() -> None:
+    """Overwriting it would break the one thing the header is for.
+
+    A caller who can reproduce their own key on retry has done exactly the right thing;
+    replacing it means the API sees a value they cannot repeat.
+    """
+    rec = Recorder(status=200, body={})
+    with make_client(rec) as crs:
+        crs.call("POST", "/some/future/endpoint", headers={"Idempotency-Key": "deploy-42"})
+
+    assert rec.requests[0].headers.get_list("idempotency-key") == ["deploy-42"]
+
+
+def test_a_lowercase_spelling_still_counts_as_supplied() -> None:
+    """HTTP header names are case-insensitive, and a membership test on a dict is not.
+
+    Checking `"Idempotency-Key" in headers` would miss this and send two - after which the
+    API sees a key the caller cannot reproduce, which is the failure the header exists to
+    prevent.
+    """
+    rec = Recorder(status=200, body={})
+    with make_client(rec) as crs:
+        crs.call("PUT", "/some/future/endpoint", headers={"idempotency-key": "deploy-42"})
+
+    assert rec.requests[0].headers.get_list("idempotency-key") == ["deploy-42"]
+
+
+def test_the_escape_hatch_adds_nothing_to_a_get() -> None:
+    """A GET creates nothing, so a key would only pollute the API's 24-hour retention."""
+    rec = Recorder(status=200, body={})
+    with make_client(rec) as crs:
+        crs.call("GET", "/some/future/endpoint")
+
+    assert "idempotency-key" not in rec.requests[0].headers
+
+
+def test_one_generated_key_is_reused_across_retries() -> None:
+    """Generated before the loop, not inside it.
+
+    A fresh key per attempt is precisely how a dropped connection turns into two copies of
+    one secret - the case the mandatory header exists to rule out.
+    """
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if len(seen) == 1:
+            raise httpx.ConnectError("connection reset", request=request)
+        return httpx.Response(200, json={})
+
+    with CredenShare(CREDENTIAL, transport=httpx.MockTransport(handler), max_retries=2) as crs:
+        crs.call("POST", "/some/future/endpoint", json={"a": 1})
+
+    assert len(seen) == 2
+    assert seen[0].headers["idempotency-key"] == seen[1].headers["idempotency-key"]
+
+
+def test_a_delete_carries_no_generated_key() -> None:
+    """POST, PUT and PATCH only. A DELETE gets nothing.
+
+    `DELETE /shares/{code}` shipped at 0.1.4 without this header, and the release notes say
+    the shares surface did not change. The backend consults the header on creates, so on a
+    delete it is inert - it would be a wire change to a published surface that buys nothing.
+    The endpoint is already idempotent by construction: a repeat is a 404, and there is no
+    second copy of anything for a key to prevent.
+    """
+    rec = Recorder(status=200, body={})
+    with make_client(rec) as crs:
+        crs.shares.expire("a1")
+
+    assert rec.requests[0].method == "DELETE"
+    assert "idempotency-key" not in rec.requests[0].headers
+
+
+def test_a_caller_who_keys_a_delete_still_has_it_forwarded() -> None:
+    """Narrowing what is GENERATED does not filter what was SUPPLIED.
+
+    A caller who has a reason to key a DELETE - their own dedupe ledger, a replayed job -
+    passes one and it goes out verbatim. This client never strips a header it was handed.
+    """
+    rec = Recorder(status=200, body={})
+    with make_client(rec) as crs:
+        crs.call("DELETE", "/some/future/endpoint", headers={"Idempotency-Key": "sweep-7"})
+
+    assert rec.requests[0].method == "DELETE"
+    assert rec.requests[0].headers.get_list("idempotency-key") == ["sweep-7"]
+
+
+def test_a_patch_and_a_put_do_get_a_generated_key() -> None:
+    """The other two methods that can create. Narrowing to POST alone would drop them."""
+    for method in ("POST", "PUT", "PATCH"):
+        rec = Recorder(status=200, body={})
+        with make_client(rec) as crs:
+            crs.call(method, "/some/future/endpoint", json={"a": 1})
+        assert rec.requests[0].headers.get("idempotency-key"), f"{method} carried no key"
+
+
+def test_neither_a_head_nor_an_options_gets_a_generated_key() -> None:
+    """Non-GET is not the test. Only POST, PUT and PATCH can create anything."""
+    for method in ("DELETE", "HEAD", "OPTIONS"):
+        rec = Recorder(status=200, body={})
+        with make_client(rec) as crs:
+            crs.call(method, "/some/future/endpoint")
+        assert "idempotency-key" not in rec.requests[0].headers, f"{method} carried a key"
+
+
+def test_the_escape_hatch_maps_errors_like_a_modelled_call() -> None:
+    """An escape hatch that dropped the error mapping would be a reason to reach past this
+    client entirely, which is worse than not having one."""
+    rec = Recorder(status=403, body={"message": "limit reached", "error_code": 61})
+    with make_client(rec) as crs, pytest.raises(QuotaExceededError):
+        crs.call("POST", "/some/future/endpoint", json={"a": 1})

@@ -74,8 +74,19 @@ _KEY_LEN = 32
 _PUBKEY_LEN = 65  # 0x04 || X(32) || Y(32)
 _WRAP_VERSION = 1
 
-#: Field types the recipient view knows how to render (section 2.2.1).
-FIELD_TYPES = ("text", "password", "date", "multiline", "markdown", "source_code")
+#: Field types the recipient view knows how to render (section 2.2.1). ``url`` is a link, made
+#: clickable only for an absolute http(s) address; ``qr`` is text drawn as a QR code, at most
+#: 2,300 characters. Neither is checked here: ``validate_fields`` only requires a ``type``.
+FIELD_TYPES = (
+    "text",
+    "password",
+    "date",
+    "multiline",
+    "markdown",
+    "source_code",
+    "url",
+    "qr",
+)
 
 
 def _hkdf(ikm: bytes, salt: bytes, info: str, length: int) -> bytes:

@@ -143,6 +143,30 @@ def test_the_fixture_uses_key_not_label() -> None:
             assert "label" not in field
 
 
+def test_field_types_match_the_app_and_only_presence_is_checked() -> None:
+    """``url`` and ``qr`` reached the app on 2026-10-24.
+
+    The type rides inside the ciphertext, so the server never sees it and this SDK does not
+    police it: the 2,300-character QR limit is the app editor's, not a wire rule.
+    """
+    assert crypto.FIELD_TYPES == (
+        "text",
+        "password",
+        "date",
+        "multiline",
+        "markdown",
+        "source_code",
+        "url",
+        "qr",
+    )
+    crypto.validate_fields(
+        [
+            {"key": "Docs", "value": "not a link", "type": "url"},
+            {"key": "Wi-Fi", "value": "x" * 2301, "type": "qr"},
+        ]
+    )
+
+
 def test_a_wrong_passcode_is_indistinguishable_from_tampering() -> None:
     case = VECTORS["content"][1]  # the passcode case
     with pytest.raises(WireFormatError):

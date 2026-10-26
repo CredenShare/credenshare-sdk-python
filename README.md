@@ -79,6 +79,17 @@ crs.shares.create(
 )
 ```
 
+## Activity emails
+
+```python
+crs.shares.create(title="Deploy key", fields=fields, notify_on=["viewed", "denied"])
+```
+
+`notify_on` emails the share's creator when it is viewed, when a view is refused, when it
+expires or when it is deleted: any of `viewed`, `denied`, `expired` and `deleted`
+(`NOTIFY_ON_EVENTS`), each at most once, the same choice as the app's "Email me when". An
+unknown or repeated event raises `InvalidArgumentError` before anything is encrypted or sent.
+
 ## Listing and expiring
 
 ```python
@@ -86,7 +97,15 @@ for row in crs.shares.list(limit=50):
     print(row.short_code, row.expired_at)
 
 crs.shares.expire("aB3dEf12")   # irreversible
+
+# Shares that have ended, by date, views or deletion, newest expiry first.
+for row in crs.shares.iter_all(status="expired"):
+    print(row.short_code, row.expired_at)
 ```
+
+`crs.requests.list` and `iter_all` take `status` too: the expired list is the requests that
+have closed, and a deleted request is in neither. Without `status`, both read the active list
+and send what they always have.
 
 `list` and `get` return **metadata only** — never content, never a key. A short code
 belonging to another account reports exactly as one that does not exist, so a credential
@@ -224,6 +243,81 @@ for day in stats.daily_views:      # oldest first, zero-filled, may be empty
 The per-member breakdown the dashboard shows is deliberately absent: a key scoped to read
 statistics should not become a way to enumerate colleagues.
 
+## Who opened a share
+
+```python
+page = crs.shares.access_log("aB3dEf12", limit=50)
+for e in page.entries:             # newest first
+    print(e.accessed_at, e.accessed_ip, e.platform, e.failed_passcode, e.signed_in)
+
+week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+for e in crs.shares.iter_access_log("aB3dEf12", from_=week_ago):
+    ...
+```
+
+The access log the app shows under Access History. It needs the `audit:read` scope, which
+`shares:read` does not include because the log carries recipients' IP addresses. Only the
+share's creator can read it, for a live share or one that has ended; any other short code
+raises `NotFoundError`.
+
+Pages are cursor-based: `iter_access_log` follows `next_cursor` to the end, and `access_log`
+with `cursor` reads one page further back. `from_` (trailing underscore, since `from` is a
+keyword) and `to` take RFC 3339 strings or timezone-aware datetimes; a naive datetime is refused,
+because nothing here can know which zone it meant. The plan's retention applies whatever
+`from_` says, and `retention_days`, `effective_from` and `effective_to` report the window used.
+
+Each page carries a weak `etag`. Pass it back as `if_none_match` and an unchanged page returns
+with `not_modified` set rather than raising. The window's ends default to the current time, so
+an unchanged page is only likely when both `from_` and `to` are set.
+
+`user_agent` is the raw user agent, `None` when none was recorded; link previews and scanners
+show up there. `signed_in` says whether the viewer was signed in, not who they were.
+
+## Capabilities
+
+```python
+caps = crs.capabilities.get()
+print(caps.plan.name, caps.key.scopes, caps.limits.remaining_shares)
+if caps.features.get("secure_requests"):
+    ...
+```
+
+What this credential may do: its scopes and rate limit, its plan (the team's for a team key),
+the plan's limits and features, and the lists the API accepts. No scope is needed. In `limits`,
+`UNLIMITED` (-1) means the plan sets none. `sharing_policy` is the team's sharing policy for a
+team key, so it can be met before creating anything, and `None` for a personal key. `etag` and
+`if_none_match` work as they do for the access log.
+
+## Generating a password, passphrase or PIN
+
+```python
+from credenshare import generate_password, generate_passphrase, generate_pin
+
+password = generate_password()                          # 20 characters
+phrase = generate_passphrase(6, separator="space")
+pin = generate_pin(8)
+print(phrase.bits, phrase.strength)                     # 77.5... Strong
+```
+
+Generated on this machine, with nothing sent anywhere: the app's three modes, with the same
+character sets and the same strength figures.
+
+- **Password:** 8 to 128 characters (default 20) from upper and lower case, numbers and the
+  symbols ``!@#$%^&*()_+-=[]{}|;:,.<>?`"~/\'``, any set switched off with `uppercase`,
+  `lowercase`, `numbers` or `symbols=False`, and any characters left out with `exclude`.
+- **Passphrase:** 3 to 12 words (default 5) from the EFF long word list, 7,776 words, joined
+  by `hyphen` (the default), `space`, `period`, `underscore` or `none`. `capitalize`
+  upper-cases each word; `include_number` adds one digit to one word.
+- **PIN:** 4 to 12 digits (default 6).
+
+Every draw is uniform: `secrets.randbelow` rejection-samples, where reducing random bytes with
+`%` would favour some characters. `bits` is the entropy of what the options generate: length
+times log2 of the pool for a password, words times log2(7,776) for a passphrase, plus log2(10)
+and log2(words) for the digit. `strength` is Weak below 40 bits, Fair below 60, Strong below 80
+and Very Strong from there, as the app labels it. Out-of-range options raise
+`InvalidArgumentError` rather than being adjusted. `repr` and `str` of a `Generated` withhold
+its `value`.
+
 ---
 
 ## Endpoints this SDK does not model
@@ -356,6 +450,7 @@ fixes:
 | `CustodySecretTransmittedError` | the custody half was about to be sent | rotate the credential; it should never have left the machine |
 | `RequestSeedTransmittedError` | a request seed was about to be sent | expire the request and create a new one under a new seed — do not retry |
 | `InvalidFieldError` | a field is not `{key, value, type}` | `key` is the visible label — not `label`, `name` or `title`. Also a `ValueError` |
+| `InvalidArgumentError` | an argument was refused before anything was sent or generated | a `notify_on` event, a list status, access-log options or generator options out of range. Also a `ValueError` |
 | `WebhookVerificationError` | a delivery did not verify | treat it as a forgery, not a transient error |
 | `ApiError` | any other refusal | the base class — `err.status`, `err.code` and `err.request_id` carry the detail |
 

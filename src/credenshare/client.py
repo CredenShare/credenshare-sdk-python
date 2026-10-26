@@ -12,12 +12,14 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import (
     Any,
     Callable,
     Dict,
     Iterator,
     List,
+    NamedTuple,
     Optional,
     Sequence,
     Tuple,
@@ -322,6 +324,109 @@ class ShareList(_PagedList[ShareSummary]):
     """A page of shares, with the paging figures attached."""
 
 
+#: The events ``crs.shares.create(notify_on=...)`` accepts, in the API's order.
+NOTIFY_ON_EVENTS = ("viewed", "denied", "expired", "deleted")
+
+#: What a limit reads when the plan sets none, in :class:`CapabilityLimits` and
+#: :attr:`AccessLogPage.retention_days`.
+UNLIMITED = -1
+
+_LIST_STATUSES = ("active", "expired")
+
+
+def _validate_notify_on(events: Optional[Sequence[str]]) -> None:
+    """The API's rule for ``notify_on`` (at most four, no repeats, each a known event), applied
+    before anything is encrypted, so a typo is refused here rather than after a share is sent."""
+    if events is None:
+        return
+    if isinstance(events, str):
+        raise InvalidArgumentError("notify_on is a list of events, not one string")
+    seen = set()
+    for event in events:
+        if event not in NOTIFY_ON_EVENTS:
+            raise InvalidArgumentError(
+                f"notify_on {event!r} is not one of {', '.join(NOTIFY_ON_EVENTS)}"
+            )
+        if event in seen:
+            raise InvalidArgumentError(f"notify_on lists {event!r} twice")
+        seen.add(event)
+
+
+def _list_params(limit: int, page: int, status: Optional[str]) -> Dict[str, Any]:
+    """A list's query. ``status`` goes out only when asked for, so a plain ``list()`` sends
+    exactly what it always has."""
+    if status is None:
+        return {"limit": limit, "page": page}
+    if status not in _LIST_STATUSES:
+        raise InvalidArgumentError(f"a list status is 'active' or 'expired', not {status!r}")
+    return {"limit": limit, "page": page, "status": status}
+
+
+def _time_param(value: Union[str, datetime, None], name: str) -> Optional[str]:
+    """A datetime as RFC 3339 in UTC; a string as given. A naive datetime is refused, because
+    nothing here can know which zone it meant."""
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise InvalidArgumentError(
+                f"{name} is a naive datetime; give it a timezone, such as timezone.utc"
+            )
+        return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    raise InvalidArgumentError(f"{name} is an RFC 3339 string or a datetime")
+
+
+def _parsed_time(value: str) -> Optional[datetime]:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class AccessLogEntry:
+    """One opening of a share."""
+
+    #: RFC 3339, as the API sent it.
+    accessed_at: str
+    accessed_ip: str
+    platform: str
+    #: The raw user agent, or ``None`` when none was recorded. Link previews show up here.
+    user_agent: Optional[str]
+    #: The viewer entered a wrong passcode.
+    failed_passcode: bool
+    #: The viewer was signed in to CredenShare. Whose account it was is not disclosed.
+    signed_in: bool
+
+
+@dataclass(frozen=True)
+class AccessLogPage:
+    """One page of a share's access log, newest first.
+
+    When ``not_modified`` is true the API answered 304 to ``if_none_match``: the page already
+    held is still current, and nothing here but ``short_code`` and ``etag`` is set.
+    """
+
+    short_code: str
+    entries: Tuple[AccessLogEntry, ...]
+    #: Reads the next, older page. ``None`` on the last page.
+    next_cursor: Optional[str]
+    #: The plan's access-log retention in days, or :data:`UNLIMITED`.
+    retention_days: int
+    #: The window the API applied after retention. When ``from_`` and ``to`` are not set they
+    #: move with the clock, so the ``etag`` of an unbounded read changes from one second to
+    #: the next.
+    effective_from: Optional[str]
+    effective_to: Optional[str]
+    etag: Optional[str]
+    not_modified: bool
+
+    @property
+    def has_more(self) -> bool:
+        """Whether an older page exists."""
+        return self.next_cursor is not None
+
+
 def _walk(fetch: Callable[[int], _PagedList[_Row]]) -> Iterator[_Row]:
     """Walk a paged surface page by page, yielding rows.
 
@@ -374,6 +479,7 @@ class _Shares:
         custody: bool = False,
         item_key_wrap: Optional[str] = None,
         organization_id: Optional[str] = None,
+        notify_on: Optional[Sequence[str]] = None,
     ) -> Share:
         """Encrypt ``fields`` locally and create a share.
 
@@ -405,7 +511,13 @@ class _Shares:
         body reproducible. Never reuse a key across shares whose content differs: this client
         draws a fresh IV each time, which is what keeps that safe, but nothing here can stop
         you from carrying a key somewhere that does not.
+
+        ``notify_on`` emails the share's creator when it is viewed, when a view is refused,
+        when it expires or when it is deleted: any of :data:`NOTIFY_ON_EVENTS`, each at most
+        once, the same choice as the app's "Email me when". It is checked before anything is
+        encrypted or sent, as the API checks it.
         """
+        _validate_notify_on(notify_on)
         content_key = content_key if content_key is not None else crypto.new_content_key()
 
         if custody and item_key_wrap is not None:
@@ -444,6 +556,8 @@ class _Shares:
             body["item_key_wrap"] = item_key_wrap
         if organization_id is not None:
             body["organization_id"] = organization_id
+        if notify_on:
+            body["notify_on"] = list(notify_on)
 
         # Required by the API, not optional. A retried automation must not create a second
         # copy of a credential in the world, with its own link and audit trail, that the
@@ -460,13 +574,17 @@ class _Shares:
             custody=data.get("custody"),
         )
 
-    def list(self, *, limit: int = 25, page: int = 1) -> ShareList:
+    def list(self, *, limit: int = 25, page: int = 1, status: Optional[str] = None) -> ShareList:
         """One page of the account's shares, newest first. Metadata only.
 
         The returned list carries ``page``, ``limit``, ``total``, ``total_pages`` and
         ``has_more``. Use :meth:`iter_all` to walk every page.
+
+        ``status="expired"`` lists the shares that have ended, by date, by views or by
+        deletion, newest expiry first, in the same shape. Left out (or ``"active"``), this is
+        the live list, and nothing new is sent.
         """
-        data = self._client._request("GET", "/shares", params={"limit": limit, "page": page})
+        data = self._client._request("GET", "/shares", params=_list_params(limit, page, status))
         rows = data.get("shares") or data.get("data") or []
         pagination = data.get("pagination") or {}
         return ShareList(
@@ -480,13 +598,121 @@ class _Shares:
             total_pages=pagination.get("total_pages"),
         )
 
-    def iter_all(self, *, limit: int = 100) -> Iterator[ShareSummary]:
+    def iter_all(self, *, limit: int = 100, status: Optional[str] = None) -> Iterator[ShareSummary]:
         """Every share, page by page.
 
         Does not stop on a page shorter than ``limit`` — the server is entitled to return
         one in the middle of a result set, and stopping there silently truncates.
+        ``status`` is as for :meth:`list`.
         """
-        return _walk(lambda page: self.list(limit=limit, page=page))
+        _list_params(limit, 1, status)
+        return _walk(lambda page: self.list(limit=limit, page=page, status=status))
+
+    def access_log(
+        self,
+        short_code: str,
+        *,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+        from_: Union[str, datetime, None] = None,
+        to: Union[str, datetime, None] = None,
+        if_none_match: Optional[str] = None,
+    ) -> AccessLogPage:
+        """One page of a share's access log: who opened it, newest first, the history the app
+        shows under Access History.
+
+        Needs the ``audit:read`` scope, which ``shares:read`` does not include because the log
+        carries recipients' IP addresses; without it this raises :class:`PermissionError_`.
+        Only the share's creator can read the log, for a live share or one that has ended, and
+        any other short code raises :class:`NotFoundError`.
+
+        ``limit`` is 1 to 100 (the API answers 50 when it is left out). ``cursor`` is a
+        previous page's ``next_cursor``. ``from_`` and ``to`` bound the entries by time, as
+        RFC 3339 strings or timezone-aware datetimes; the plan's retention applies whatever
+        ``from_`` says. Pass an earlier ``etag`` as ``if_none_match`` and an unchanged page
+        comes back with ``not_modified`` set rather than as an error.
+        """
+        params: Dict[str, Any] = {}
+        if limit is not None:
+            if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+                raise InvalidArgumentError(f"an access log limit is 1 to 100, got {limit!r}")
+            params["limit"] = limit
+        if cursor:
+            params["cursor"] = cursor
+        start = _time_param(from_, "from_")
+        end = _time_param(to, "to")
+        if start is not None and end is not None:
+            a, b = _parsed_time(start), _parsed_time(end)
+            if a is not None and b is not None and a > b:
+                raise InvalidArgumentError("the access log's from_ is after its to")
+        if start is not None:
+            params["from"] = start
+        if end is not None:
+            params["to"] = end
+        headers = {"If-None-Match": if_none_match} if if_none_match else None
+
+        reply = self._client._exchange(
+            "GET",
+            f"/shares/{quote(short_code, safe='')}/access-log",
+            params=params or None,
+            headers=headers,
+            accept_not_modified=True,
+        )
+        data = reply.data
+        next_cursor = data.get("next_cursor")
+        effective_from = data.get("effective_from")
+        effective_to = data.get("effective_to")
+        return AccessLogPage(
+            short_code=data.get("short_code") or short_code,
+            entries=tuple(
+                AccessLogEntry(
+                    accessed_at=str(row.get("accessed_at") or ""),
+                    accessed_ip=str(row.get("accessed_ip") or ""),
+                    platform=str(row.get("platform") or ""),
+                    user_agent=row["user_agent"]
+                    if isinstance(row.get("user_agent"), str)
+                    else None,
+                    failed_passcode=row.get("failed_passcode") is True,
+                    signed_in=row.get("signed_in") is True,
+                )
+                for row in (data.get("entries") or [])
+            ),
+            next_cursor=next_cursor if isinstance(next_cursor, str) and next_cursor else None,
+            retention_days=int(data.get("retention_days") or 0),
+            effective_from=effective_from if isinstance(effective_from, str) else None,
+            effective_to=effective_to if isinstance(effective_to, str) else None,
+            etag=reply.etag,
+            not_modified=reply.not_modified,
+        )
+
+    def iter_access_log(
+        self,
+        short_code: str,
+        *,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+        from_: Union[str, datetime, None] = None,
+        to: Union[str, datetime, None] = None,
+    ) -> Iterator[AccessLogEntry]:
+        """Every entry of a share's access log, newest first, following each page's
+        ``next_cursor``.
+
+        No ``if_none_match``: a walk reads every page, and a 304 on the first would end it
+        having read nothing.
+        """
+        for _ in range(MAX_PAGES):
+            page = self.access_log(short_code, limit=limit, cursor=cursor, from_=from_, to=to)
+            yield from page.entries
+            if page.next_cursor is None:
+                return
+            # A cursor that does not move would repeat the same page forever.
+            if page.next_cursor == cursor:
+                raise ApiError(
+                    "the access log returned the cursor it was given, so paging cannot be "
+                    "trusted to terminate"
+                )
+            cursor = page.next_cursor
+        raise ApiError(f"the access log did not end within {MAX_PAGES} pages")
 
     def get(self, short_code: str) -> ShareSummary:
         """One share's metadata.
@@ -945,7 +1171,7 @@ class _Requests:
             expired_at=data.get("expired_at"),
         )
 
-    def list(self, *, limit: int = 25, page: int = 1) -> RequestList:
+    def list(self, *, limit: int = 25, page: int = 1, status: Optional[str] = None) -> RequestList:
         """One page of the account's secure requests, newest first. Metadata only.
 
         The returned list carries ``page``, ``limit``, ``total``, ``total_pages`` and
@@ -955,8 +1181,11 @@ class _Requests:
         applies when the parameter is absent, and capped by it at 100. The published spec
         says 10 for this endpoint and is wrong; sending 10 by default would make the same
         call return a different page in this SDK than in the other three.
+
+        ``status="expired"`` lists the requests that have closed; a deleted request is in
+        neither list. Left out, nothing new is sent.
         """
-        data = self._client._request("GET", "/requests", params={"limit": limit, "page": page})
+        data = self._client._request("GET", "/requests", params=_list_params(limit, page, status))
         rows = data.get("requests") or data.get("data") or []
         pagination = data.get("pagination") or {}
         return RequestList(
@@ -974,13 +1203,17 @@ class _Requests:
             total_pages=pagination.get("total_pages"),
         )
 
-    def iter_all(self, *, limit: int = 100) -> Iterator[RequestSummary]:
+    def iter_all(
+        self, *, limit: int = 100, status: Optional[str] = None
+    ) -> Iterator[RequestSummary]:
         """Every secure request, page by page.
 
         Does not stop on a page shorter than ``limit`` — the server is entitled to return
         one in the middle of a result set, and stopping there silently truncates.
+        ``status`` is as for :meth:`list`.
         """
-        return _walk(lambda page: self.list(limit=limit, page=page))
+        _list_params(limit, 1, status)
+        return _walk(lambda page: self.list(limit=limit, page=page, status=status))
 
     def get(self, short_code: str) -> RequestSummary:
         """One request's metadata.
@@ -1135,11 +1368,138 @@ class _Stats:
         )
 
 
+@dataclass(frozen=True)
+class CapabilityKey:
+    """The credential itself, as the API sees it."""
+
+    key_id: str
+    scopes: Tuple[str, ...]
+    custody_level: int
+    #: The team a team key acts in, or ``None`` for a personal key.
+    organization_id: Optional[str]
+    rate_limit_rpm: int
+
+
+@dataclass(frozen=True)
+class CapabilityPlan:
+    """The plan behind the key: the team's for a team key, the account's otherwise."""
+
+    code: str
+    name: str
+
+
+@dataclass(frozen=True)
+class CapabilityLimits:
+    """The plan's numeric limits, any negotiated override included. :data:`UNLIMITED` (-1)
+    means the plan sets none."""
+
+    max_shares: int
+    remaining_shares: int
+    max_fields: int
+    max_days_access_logs: int
+    max_api_keys: int
+    max_webhooks: int
+
+
+@dataclass(frozen=True)
+class Capabilities:
+    """What a credential may do.
+
+    When ``not_modified`` is true the API answered 304 to ``if_none_match``, and nothing but
+    ``etag`` is set.
+    """
+
+    api_version: str
+    key: CapabilityKey
+    plan: CapabilityPlan
+    limits: CapabilityLimits
+    #: The plan's switches by the API's own names, such as ``secure_requests``. A mapping
+    #: rather than attributes, so a feature the API adds later is readable without a release.
+    features: Dict[str, bool]
+    #: The team's sharing policy for a team key, in the API's shape; ``None`` for a personal
+    #: key.
+    sharing_policy: Optional[Dict[str, Any]]
+    field_types: Tuple[str, ...]
+    notify_on_events: Tuple[str, ...]
+    etag: Optional[str]
+    not_modified: bool
+
+
+class _Capabilities:
+    """The ``/v1/capabilities`` surface. No scope is needed."""
+
+    def __init__(self, client: "CredenShare") -> None:
+        self._client = client
+
+    def get(self, *, if_none_match: Optional[str] = None) -> Capabilities:
+        """The key's scopes and rate limit, its plan (the team's for a team key), the plan's
+        limits and features, the team's sharing policy, and the lists the API accepts.
+
+        Pass an earlier ``etag`` as ``if_none_match``: an unchanged answer comes back with
+        ``not_modified`` set rather than as an error.
+        """
+        reply = self._client._exchange(
+            "GET",
+            "/capabilities",
+            headers={"If-None-Match": if_none_match} if if_none_match else None,
+            accept_not_modified=True,
+        )
+        data = reply.data
+        key = _mapping(data.get("key"))
+        plan = _mapping(data.get("plan"))
+        limits = _mapping(data.get("limits"))
+        policy = data.get("sharing_policy")
+        organization = key.get("organization_id")
+        return Capabilities(
+            api_version=str(data.get("api_version") or ""),
+            key=CapabilityKey(
+                key_id=str(key.get("key_id") or ""),
+                scopes=_strings(key.get("scopes")),
+                custody_level=int(key.get("custody_level") or 0),
+                organization_id=organization
+                if isinstance(organization, str) and organization
+                else None,
+                rate_limit_rpm=int(key.get("rate_limit_rpm") or 0),
+            ),
+            plan=CapabilityPlan(code=str(plan.get("code") or ""), name=str(plan.get("name") or "")),
+            limits=CapabilityLimits(
+                max_shares=int(limits.get("max_shares") or 0),
+                remaining_shares=int(limits.get("remaining_shares") or 0),
+                max_fields=int(limits.get("max_fields") or 0),
+                max_days_access_logs=int(limits.get("max_days_access_logs") or 0),
+                max_api_keys=int(limits.get("max_api_keys") or 0),
+                max_webhooks=int(limits.get("max_webhooks") or 0),
+            ),
+            features={str(k): v is True for k, v in _mapping(data.get("features")).items()},
+            sharing_policy=policy if isinstance(policy, dict) else None,
+            field_types=_strings(data.get("field_types")),
+            notify_on_events=_strings(data.get("notify_on_events")),
+            etag=reply.etag,
+            not_modified=reply.not_modified,
+        )
+
+
+def _mapping(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _strings(value: Any) -> Tuple[str, ...]:
+    return tuple(item for item in value if isinstance(item, str)) if isinstance(value, list) else ()
+
+
+class _Reply(NamedTuple):
+    """A successful exchange: the decoded body, and what the conditional reads need."""
+
+    data: Dict[str, Any]
+    etag: Optional[str]
+    not_modified: bool
+
+
 class CredenShare:
     """The API client.
 
-    Three surfaces, matching the API's own: ``crs.shares``, ``crs.requests`` and
-    ``crs.stats``. Anything not modelled yet is reachable through :meth:`call`.
+    Four surfaces, matching the API's own: ``crs.shares``, ``crs.requests``, ``crs.stats``
+    and ``crs.capabilities``. Anything not modelled yet is reachable through :meth:`call`.
 
     ``credential`` accepts the two- or three-part form. If you pass the three-part one, the
     custody secret stays on this machine — it is used to derive a keypair locally and is
@@ -1173,6 +1533,7 @@ class CredenShare:
         self.shares = _Shares(self)
         self.requests = _Requests(self)
         self.stats = _Stats(self)
+        self.capabilities = _Capabilities(self)
 
     # ── context manager ──────────────────────────────────────────────────────────────
 
@@ -1272,6 +1633,21 @@ class CredenShare:
         params: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
+        return self._exchange(method, path, json=json, params=params, headers=headers).data
+
+    def _exchange(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        accept_not_modified: bool = False,
+    ) -> _Reply:
+        """``_request`` with the envelope kept. With ``accept_not_modified``, a 304 is an
+        answer rather than an error: the caller sent If-None-Match, and "unchanged" is what it
+        asked. Everywhere else a 304 still raises, where an empty result would read as real."""
         # Belt and braces. `bearer` is assembled from parts so a custody secret cannot reach
         # the header, but this asserts the property at the boundary rather than trusting a
         # constructor three files away.
@@ -1337,14 +1713,17 @@ class CredenShare:
                 time.sleep(0.5 * (2**attempt))
                 attempt += 1
 
+        etag = response.headers.get("etag")
+        if accept_not_modified and response.status_code == 304:
+            return _Reply({}, etag, True)
         if response.is_success:
             if not response.content:
-                return {}
+                return _Reply({}, etag, False)
             try:
                 parsed: Dict[str, Any] = response.json()
             except ValueError:
-                return {}
-            return parsed
+                return _Reply({}, etag, False)
+            return _Reply(parsed, etag, False)
         raise _error_for(response)
 
 

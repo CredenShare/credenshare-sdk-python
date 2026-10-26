@@ -31,6 +31,14 @@ from importlib.metadata import version as _installed_version
 
 from . import webhooks
 from .client import (
+    NOTIFY_ON_EVENTS,
+    UNLIMITED,
+    AccessLogEntry,
+    AccessLogPage,
+    Capabilities,
+    CapabilityKey,
+    CapabilityLimits,
+    CapabilityPlan,
     CredenShare,
     Credential,
     DailyView,
@@ -86,6 +94,15 @@ from .errors import (
     ServiceUnavailableError,
     WireFormatError,
 )
+from .generate import (
+    PASSPHRASE_SEPARATORS,
+    PASSWORD_SYMBOLS,
+    Generated,
+    generate_passphrase,
+    generate_password,
+    generate_pin,
+    strength_of,
+)
 from .webhooks import WebhookVerificationError
 
 #: Read from the installed distribution rather than written here, because a second copy of the
@@ -112,6 +129,21 @@ __all__ = [
     "Stats",
     "ShareCounts",
     "DailyView",
+    "AccessLogEntry",
+    "AccessLogPage",
+    "Capabilities",
+    "CapabilityKey",
+    "CapabilityLimits",
+    "CapabilityPlan",
+    "NOTIFY_ON_EVENTS",
+    "UNLIMITED",
+    "Generated",
+    "PASSPHRASE_SEPARATORS",
+    "PASSWORD_SYMBOLS",
+    "generate_passphrase",
+    "generate_password",
+    "generate_pin",
+    "strength_of",
     "webhooks",
     "FIELD_TYPES",
     "SEED_LENGTH",

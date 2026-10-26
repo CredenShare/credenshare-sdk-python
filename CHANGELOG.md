@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+The /v1 additions of Gitea #404 (who opened a share, what a key may do, the expired lists and
+activity emails) and a local generator. Additive: every existing call sends the bytes it sent in
+0.3.0, and the conformance fixture is byte-identical.
+
+### Added
+
+- **`crs.shares.access_log(code, ...)` and `crs.shares.iter_access_log(code, ...)`**: a share's
+  access log, newest first, with `limit`, `cursor`, `from_`, `to` (strings or timezone-aware
+  datetimes) and `if_none_match`, returning `AccessLogPage` and `AccessLogEntry`. Needs the
+  `audit:read` scope. The walk follows `next_cursor` and raises `ApiError` if a cursor fails to
+  move.
+- **`crs.capabilities.get()`**: the key's scopes, its plan's limits and features, the team's
+  sharing policy for a team key, and the field types and activity-email events the API accepts,
+  as `Capabilities`, `CapabilityKey`, `CapabilityPlan` and `CapabilityLimits`.
+- **Conditional reads.** Both return an `etag`; passed back as `if_none_match`, an unchanged
+  answer comes back with `not_modified` set. A 304 never raises on these two, and still does
+  everywhere else, `call()` included, where an empty result would read as a real one.
+- **`status="active" | "expired"`** on `shares.list`, `shares.iter_all`, `requests.list` and
+  `requests.iter_all`. Left out, nothing new is sent.
+- **`notify_on=`** on `shares.create`, with `NOTIFY_ON_EVENTS`, checked as the API checks it.
+- **`generate_password`, `generate_passphrase`, `generate_pin` and `strength_of`**: the app's
+  generator, on this machine, with nothing sent. Draws through `secrets.randbelow`, the EFF long
+  word list shipped byte-for-byte as package data (attributed in NOTICE), and the app's strength
+  figures. `repr` and `str` of a `Generated` withhold its value.
+- **`UNLIMITED`** (-1). `InvalidArgumentError` now also covers these new refusals.
+
 ## 0.3.0 — 2026-10-25
 
 The two field types the web app gained on 2026-10-24. Nothing here changes behaviour: a field's

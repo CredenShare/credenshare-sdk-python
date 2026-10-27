@@ -38,7 +38,9 @@ class Replay:
         return httpx.Response(status, json=body, headers=headers)
 
     def client(self) -> CredenShare:
-        return CredenShare(CREDENTIAL, transport=httpx.MockTransport(self.handler))
+        return CredenShare(
+            CREDENTIAL, transport=httpx.MockTransport(self.handler), link_origin="https://crs.sh"
+        )
 
 
 def access_log_body(next_cursor: Optional[str]) -> Dict[str, Any]:

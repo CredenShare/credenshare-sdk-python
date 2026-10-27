@@ -288,6 +288,27 @@ the plan's limits and features, and the lists the API accepts. No scope is neede
 team key, so it can be met before creating anything, and `None` for a personal key. `etag` and
 `if_none_match` work as they do for the access log.
 
+## Links on a team's own domain
+
+```python
+crs = CredenShare(team_credential)
+share = crs.shares.create(title=title, fields=fields)   # https://links.example.com/aB3dEf12#1...
+print(crs.link_origin())                                 # the origin this client builds links on
+```
+
+A team can serve its links from its own domain. A client constructed without `link_origin` asks
+the API once, on its first create, and builds every link on the team's domain when the
+credential is a team key whose team has one live for new links. A personal key's links, and
+those of a team without a domain, stay on `https://crs.sh`: a team's domain serves only that
+team's shares and requests.
+
+Pass `link_origin` to choose the origin yourself, and nothing is asked. The answer is kept for
+the life of the client, a "none" included, and a failed question leaves the client on the
+default rather than failing the create. Only a bare `https://` origin is followed, since the
+content key goes into the links built on it. `link_for`, `collect_link_for` and
+`access_link_for` use the team's domain once the client has learned it, and
+`crs.capabilities.get().link_origin` carries the same value.
+
 ## Generating a password, passphrase or PIN
 
 ```python

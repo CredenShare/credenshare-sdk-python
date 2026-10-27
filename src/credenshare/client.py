@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -27,7 +28,7 @@ from typing import (
     Union,
     overload,
 )
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -566,6 +567,7 @@ class _Shares:
 
         data = self._client._request("POST", "/shares", json=body, headers=headers)
         short_code = data["short_code"]
+        self._client._resolve_link_origin()
         return Share(
             short_code=short_code,
             link=self._client.link_for(short_code, content_key),
@@ -1163,6 +1165,7 @@ class _Requests:
             )
 
         short_code = data["short_code"]
+        self._client._resolve_link_origin()
         return SecureRequest(
             short_code=short_code,
             seed=seed,
@@ -1423,6 +1426,10 @@ class Capabilities:
     notify_on_events: Tuple[str, ...]
     etag: Optional[str]
     not_modified: bool
+    #: The team's custom domain, such as ``https://links.example.com``, for a team key whose team
+    #: has one live for new links; ``None`` otherwise. The client uses it when ``link_origin``
+    #: was not passed to the constructor.
+    link_origin: Optional[str] = None
 
 
 class _Capabilities:
@@ -1450,6 +1457,7 @@ class _Capabilities:
         limits = _mapping(data.get("limits"))
         policy = data.get("sharing_policy")
         organization = key.get("organization_id")
+        link_origin = data.get("link_origin")
         return Capabilities(
             api_version=str(data.get("api_version") or ""),
             key=CapabilityKey(
@@ -1474,9 +1482,34 @@ class _Capabilities:
             sharing_policy=policy if isinstance(policy, dict) else None,
             field_types=_strings(data.get("field_types")),
             notify_on_events=_strings(data.get("notify_on_events")),
+            link_origin=link_origin if isinstance(link_origin, str) and link_origin else None,
             etag=reply.etag,
             not_modified=reply.not_modified,
         )
+
+
+def _bare_https_origin(raw: Optional[str]) -> str:
+    """``raw`` as ``https://host[:port]`` when it is exactly that, and "" for anything else.
+
+    The content key goes into links built on this origin, so an answer that is not a plain
+    https origin is not followed.
+    """
+    if not raw:
+        return ""
+    try:
+        parts = urlsplit(raw.rstrip("/"))
+        bare = (
+            parts.scheme == "https"
+            and bool(parts.hostname)
+            and parts.username is None
+            and parts.password is None
+            and parts.path == ""
+            and parts.query == ""
+            and parts.fragment == ""
+        )
+    except ValueError:
+        return ""
+    return f"https://{parts.netloc}" if bare else ""
 
 
 def _mapping(value: Any) -> Dict[str, Any]:
@@ -1511,7 +1544,7 @@ class CredenShare:
         credential: str,
         *,
         base_url: str = DEFAULT_BASE_URL,
-        link_origin: str = DEFAULT_LINK_ORIGIN,
+        link_origin: Optional[str] = None,
         timeout: float = 30.0,
         max_retries: int = DEFAULT_MAX_RETRIES,
         transport: Optional[httpx.BaseTransport] = None,
@@ -1519,7 +1552,11 @@ class CredenShare:
         self.credential = Credential.parse(credential)
         self._max_retries = max(0, max_retries)
         self._base_url = base_url.rstrip("/")
-        self._link_origin = link_origin.rstrip("/")
+        #: As configured; ``None`` when it was not, which lets the team's domain be asked for.
+        self._link_origin: Optional[str] = link_origin.rstrip("/") if link_origin else None
+        #: The team's custom domain from /v1/capabilities: ``None`` until asked, "" for none.
+        self._team_origin: Optional[str] = None
+        self._team_origin_lock = threading.Lock()
         self._client = httpx.Client(
             base_url=self._base_url,
             timeout=timeout,
@@ -1548,13 +1585,47 @@ class CredenShare:
 
     # ── links ────────────────────────────────────────────────────────────────────────
 
+    def link_origin(self) -> str:
+        """The origin this client builds links on.
+
+        ``link_origin`` when it was passed to the constructor; otherwise the team's custom
+        domain when the credential is a team key whose team has one live for new links;
+        otherwise :data:`DEFAULT_LINK_ORIGIN`.
+
+        The custom domain is read from ``/v1/capabilities`` at most once per client, on the
+        first call to this method or to a create, and the answer is kept, a "none" included. A
+        failed read leaves this client on the default rather than failing anything. A team's
+        domain serves only that team's shares and requests, which is why only a team key ever
+        gets one.
+        """
+        self._resolve_link_origin()
+        return self._origin()
+
+    def _origin(self) -> str:
+        """What is known now, without asking."""
+        if self._link_origin is not None:
+            return self._link_origin
+        return self._team_origin or DEFAULT_LINK_ORIGIN
+
+    def _resolve_link_origin(self) -> None:
+        """Asks the API for the team's domain once; the creates call it. Never raises."""
+        if self._link_origin is not None:
+            return
+        with self._team_origin_lock:
+            if self._team_origin is None:
+                try:
+                    learned = _bare_https_origin(self.capabilities.get().link_origin)
+                except Exception:  # noqa: BLE001 - a failed question keeps the default
+                    learned = ""
+                self._team_origin = learned
+
     def link_for(self, short_code: str, content_key: bytes) -> str:
         """Assemble a recipient link.
 
         The key lives in the fragment, which browsers never send to a server. That is what
         makes the link readable by its holder and opaque to us.
         """
-        return f"{self._link_origin}/{short_code}#{crypto.encode_fragment(content_key)}"
+        return f"{self._origin()}/{short_code}#{crypto.encode_fragment(content_key)}"
 
     def collect_link_for(self, short_code: str) -> str:
         """The keyless collect link for a secure request — the one you hand to a human.
@@ -1566,7 +1637,7 @@ class CredenShare:
         ``/r/<short_code>`` is not derivable from anything the API returns, which is why this
         is a method rather than a note in the README telling you to assemble it yourself.
         """
-        return f"{self._link_origin}/r/{short_code}"
+        return f"{self._origin()}/r/{short_code}"
 
     def access_link_for(self, short_code: str, seed: bytes) -> str:
         """Your own access link for a secure request: the seed in the fragment.

@@ -78,7 +78,9 @@ class Sequenced:
 
 
 def make_client(rec: Recorder) -> CredenShare:
-    return CredenShare(CREDENTIAL, transport=rec.transport)
+    # A configured origin, so the one /v1/capabilities question an unconfigured client asks
+    # after its first create (Gitea #412) does not join the requests these tests read back.
+    return CredenShare(CREDENTIAL, transport=rec.transport, link_origin="https://crs.sh")
 
 
 def everything_sent(request: httpx.Request) -> str:

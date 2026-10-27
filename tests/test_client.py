@@ -395,7 +395,14 @@ def test_a_dropped_connection_is_retried_with_the_same_idempotency_key() -> None
             raise httpx.ConnectError("connection reset", request=request)
         return httpx.Response(201, json={"short_code": "xy12"})
 
-    with CredenShare(CREDENTIAL, transport=httpx.MockTransport(handler), max_retries=2) as crs:
+    # A configured origin, so the one /v1/capabilities question an unconfigured client asks
+    # after its first create (Gitea #412) does not join the attempts counted here.
+    with CredenShare(
+        CREDENTIAL,
+        transport=httpx.MockTransport(handler),
+        max_retries=2,
+        link_origin="https://crs.sh",
+    ) as crs:
         share = crs.shares.create(title="t", fields=[{"key": "k", "value": "v", "type": "text"}])
 
     assert share.short_code == "xy12"
